@@ -12,7 +12,7 @@
             RUN pip install -r requirements.txt
 
             # Expose port 8501 (default Streamlit port)
-            EXPOSE 8501
+            EXPOSE 8502
 
             # Command to run your Streamlit app
             CMD ["streamlit", "run", "Data_Input_Forecaster_v1.py", "--server.port=8502", "--server.address=0.0.0.0"]

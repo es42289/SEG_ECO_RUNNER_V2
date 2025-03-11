@@ -948,30 +948,30 @@ with st.expander("Single Well Updating", expanded=False):
                     submit_button = st.form_submit_button("Update Record")
 
                     if submit_button:
-                        pass
-                        # # Apply decline rates if checkbox is selected and values exist in session state
-                        # if apply_calc_decline and selected_key in st.session_state['calculated_declines']:
-                        #     oil_decline, gas_decline = st.session_state['calculated_declines'][selected_key]
-                        #     update_values["OIL_EMPIRICAL_DECLINE"] = str(oil_decline)
-                        #     update_values["GAS_EMPIRICAL_DECLINE"] = str(gas_decline)
+                        # pass
+                        # Apply decline rates if checkbox is selected and values exist in session state
+                        if apply_calc_decline and selected_key in st.session_state['calculated_declines']:
+                            oil_decline, gas_decline = st.session_state['calculated_declines'][selected_key]
+                            update_values["OIL_EMPIRICAL_DECLINE"] = str(oil_decline)
+                            update_values["GAS_EMPIRICAL_DECLINE"] = str(gas_decline)
 
-                        # # Handle DATE fields (convert empty strings to NULL)
-                        # update_values = {
-                        #     col: f"'{value}'" if value else "NULL"
-                        #     if table_columns.get(col, "") != "DATE" else "NULL" if value == "" else f"'{value}'"
-                        #     for col, value in update_values.items()
-                        # }
+                        # Handle DATE fields (convert empty strings to NULL)
+                        update_values = {
+                            col: f"'{value}'" if value else "NULL"
+                            if table_columns.get(col, "") != "DATE" else "NULL" if value == "" else f"'{value}'"
+                            for col, value in update_values.items()
+                        }
 
-                        # set_clause = ", ".join([f"{col} = {value}" for col, value in update_values.items()])
-                        # sql = f"UPDATE {table_name} SET {set_clause} WHERE {primary_key} = '{selected_key}'"
+                        set_clause = ", ".join([f"{col} = {value}" for col, value in update_values.items()])
+                        sql = f"UPDATE {table_name} SET {set_clause} WHERE {primary_key} = '{selected_key}'"
 
-                        # try:
-                        #     conn.sql(sql).collect()
-                        #     st.success(f"Record {primary_key} = {selected_key} updated successfully!")
-                        #     st.cache_data.clear()
-                        #     st.rerun()
-                        # except Exception as e:
-                        #     st.error(f"Error updating record: {e}")
+                        try:
+                            conn.sql(sql).collect()
+                            st.success(f"Record {primary_key} = {selected_key} updated successfully!")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error updating record: {e}")
             
             with right_column:
                 st.subheader("Production Data Visualization")
@@ -1444,65 +1444,65 @@ with st.expander("Bulk Decline Calculation", expanded=False):
             
             # Option to update database with calculated values
             if st.button("Apply Calculated Rates to Database"):
-                pass
-                # progress_bar = st.progress(0)
-                # status_text = st.empty()
-                # update_errors = []
-                # success_count = 0
+                # pass
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                update_errors = []
+                success_count = 0
                 
-                # for i, api_uwi in enumerate(calc_values.keys()):
-                #     status_text.text(f"Updating {i+1}/{len(calc_values)}: {api_uwi}")
+                for i, api_uwi in enumerate(calc_values.keys()):
+                    status_text.text(f"Updating {i+1}/{len(calc_values)}: {api_uwi}")
                     
-                #     # Get the calculated values for this well
-                #     well_values = calc_values[api_uwi]
+                    # Get the calculated values for this well
+                    well_values = calc_values[api_uwi]
                     
-                #     # Skip if no values to update
-                #     if not well_values:
-                #         continue
+                    # Skip if no values to update
+                    if not well_values:
+                        continue
                     
-                #     # Create SET clause with proper formatting for each data type
-                #     set_parts = []
+                    # Create SET clause with proper formatting for each data type
+                    set_parts = []
                     
-                #     for col, value in well_values.items():
-                #         # Check if column exists in table
-                #         if col in table_columns:
-                #             # Format based on data type
-                #             if col.startswith("LAST_") and table_columns[col] == "DATE":
-                #                 # Date format
-                #                 set_parts.append(f"{col} = '{value}'")
-                #             elif isinstance(value, (int, float)):
-                #                 # Numeric format
-                #                 set_parts.append(f"{col} = {value}")
-                #             else:
-                #                 # String format
-                #                 set_parts.append(f"{col} = '{value}'")
+                    for col, value in well_values.items():
+                        # Check if column exists in table
+                        if col in table_columns:
+                            # Format based on data type
+                            if col.startswith("LAST_") and table_columns[col] == "DATE":
+                                # Date format
+                                set_parts.append(f"{col} = '{value}'")
+                            elif isinstance(value, (int, float)):
+                                # Numeric format
+                                set_parts.append(f"{col} = {value}")
+                            else:
+                                # String format
+                                set_parts.append(f"{col} = '{value}'")
                     
-                #     # Only proceed if we have values to update
-                #     if set_parts:
-                #         set_clause = ", ".join(set_parts)
+                    # Only proceed if we have values to update
+                    if set_parts:
+                        set_clause = ", ".join(set_parts)
                         
-                #         # Build and execute SQL update
-                #         sql = f"""
-                #         UPDATE {table_name} 
-                #         SET {set_clause}
-                #         WHERE {primary_key} = '{api_uwi}'
-                #         """
+                        # Build and execute SQL update
+                        sql = f"""
+                        UPDATE {table_name} 
+                        SET {set_clause}
+                        WHERE {primary_key} = '{api_uwi}'
+                        """
                         
-                #         try:
-                #             conn.sql(sql).collect()
-                #             success_count += 1
-                #         except Exception as e:
-                #             update_errors.append(f"Error updating record {api_uwi}: {e}")
+                        try:
+                            conn.sql(sql).collect()
+                            success_count += 1
+                        except Exception as e:
+                            update_errors.append(f"Error updating record {api_uwi}: {e}")
                     
-                #     # Update progress
-                #     progress_bar.progress((i + 1) / len(calc_values))
+                    # Update progress
+                    progress_bar.progress((i + 1) / len(calc_values))
                 
-                # if update_errors:
-                #     st.error("Some updates failed:\n" + "\n".join(update_errors))
+                if update_errors:
+                    st.error("Some updates failed:\n" + "\n".join(update_errors))
                 
-                # status_text.text(f"Update complete! Successfully updated {success_count} records.")
-                # if success_count > 0:
-                #     st.success(f"Successfully updated {success_count} records with calculated values")
-                #     st.cache_data.clear()
+                status_text.text(f"Update complete! Successfully updated {success_count} records.")
+                if success_count > 0:
+                    st.success(f"Successfully updated {success_count} records with calculated values")
+                    st.cache_data.clear()
     else:
         st.warning("No data available for bulk calculation")
