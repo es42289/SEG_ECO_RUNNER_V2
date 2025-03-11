@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from io import BytesIO
 import base64
-from snowflake.snowpark.context import get_active_session
+# from snowflake.snowpark.context import get_active_session
+import snowflake.connector
 
 # Set Streamlit Page Configuration
 st.set_page_config(page_title="Table Updater", layout="wide")
@@ -16,25 +17,38 @@ st.sidebar.title("Table Updater")
 table_name = st.sidebar.text_input("Enter table name", "ECON_INPUT")
 primary_key = st.sidebar.text_input("Primary Key Column", "API_UWI")
 
-# Database Connection (Uses Snowpark Session)
-@st.cache_resource
-def get_snowflake_session():
-    return get_active_session()
+# # Database Connection (Uses Snowpark Session)
+# @st.cache_resource
+# def get_snowflake_session():
+#     return get_active_session()
 
-conn = get_snowflake_session()
+# conn = get_snowflake_session()
+
+##eliis snwoflake connection
+# Set up Snowflake connection
+conn = snowflake.connector.connect(
+    user="ELII",
+    password="Elii123456789!",
+    account="CMZNSCB-MU47932",
+    warehouse="COMPUTE_WH",
+    database="WELLS",
+    schema="MINERALS"
+)
 
 # Get Table Columns
 @st.cache_data(ttl=600)
 def get_table_columns(table):
     query = f"SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{table}' ORDER BY ORDINAL_POSITION"
-    df = pd.DataFrame(conn.sql(query).collect())
+    # df = pd.DataFrame(conn.sql(query).collect())
+    df = pd.read_sql(query, conn)
     return df.set_index("COLUMN_NAME")["DATA_TYPE"].to_dict()
 
 # Fetch Table Data
 @st.cache_data(ttl=60)
 def get_table_data(table, where_clause=""):
     query = f"SELECT * FROM {table} {f'WHERE {where_clause}' if where_clause else ''} LIMIT 1000"
-    return pd.DataFrame(conn.sql(query).collect())
+    # return pd.DataFrame(conn.sql(query).collect())
+    return pd.read_sql(query, conn)
 
 # Fetch Well Data for Filtering and Mapping
 @st.cache_data(ttl=600)
@@ -45,7 +59,8 @@ def get_well_data():
     FROM wells.minerals.vw_well_input
     """
     try:
-        df = pd.DataFrame(conn.sql(query).collect())
+        # df = pd.DataFrame(conn.sql(query).collect())
+        df = pd.read_sql(query, conn)
         if df.empty:
             st.warning("No well data retrieved from database.")
             return None
@@ -67,7 +82,8 @@ def get_production_data(api_uwi):
     ORDER BY ProducingMonth;
     """
     try:
-        result = conn.sql(query).collect()
+        # result = conn.sql(query).collect()
+        result = pd.read_sql(query, conn)
         # Debug information to understand what's being returned
         if len(result) == 0:
             print(f"No production data found for API_UWI: {api_uwi}")
@@ -932,29 +948,30 @@ with st.expander("Single Well Updating", expanded=False):
                     submit_button = st.form_submit_button("Update Record")
 
                     if submit_button:
-                        # Apply decline rates if checkbox is selected and values exist in session state
-                        if apply_calc_decline and selected_key in st.session_state['calculated_declines']:
-                            oil_decline, gas_decline = st.session_state['calculated_declines'][selected_key]
-                            update_values["OIL_EMPIRICAL_DECLINE"] = str(oil_decline)
-                            update_values["GAS_EMPIRICAL_DECLINE"] = str(gas_decline)
+                        pass
+                        # # Apply decline rates if checkbox is selected and values exist in session state
+                        # if apply_calc_decline and selected_key in st.session_state['calculated_declines']:
+                        #     oil_decline, gas_decline = st.session_state['calculated_declines'][selected_key]
+                        #     update_values["OIL_EMPIRICAL_DECLINE"] = str(oil_decline)
+                        #     update_values["GAS_EMPIRICAL_DECLINE"] = str(gas_decline)
 
-                        # Handle DATE fields (convert empty strings to NULL)
-                        update_values = {
-                            col: f"'{value}'" if value else "NULL"
-                            if table_columns.get(col, "") != "DATE" else "NULL" if value == "" else f"'{value}'"
-                            for col, value in update_values.items()
-                        }
+                        # # Handle DATE fields (convert empty strings to NULL)
+                        # update_values = {
+                        #     col: f"'{value}'" if value else "NULL"
+                        #     if table_columns.get(col, "") != "DATE" else "NULL" if value == "" else f"'{value}'"
+                        #     for col, value in update_values.items()
+                        # }
 
-                        set_clause = ", ".join([f"{col} = {value}" for col, value in update_values.items()])
-                        sql = f"UPDATE {table_name} SET {set_clause} WHERE {primary_key} = '{selected_key}'"
+                        # set_clause = ", ".join([f"{col} = {value}" for col, value in update_values.items()])
+                        # sql = f"UPDATE {table_name} SET {set_clause} WHERE {primary_key} = '{selected_key}'"
 
-                        try:
-                            conn.sql(sql).collect()
-                            st.success(f"Record {primary_key} = {selected_key} updated successfully!")
-                            st.cache_data.clear()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error updating record: {e}")
+                        # try:
+                        #     conn.sql(sql).collect()
+                        #     st.success(f"Record {primary_key} = {selected_key} updated successfully!")
+                        #     st.cache_data.clear()
+                        #     st.rerun()
+                        # except Exception as e:
+                        #     st.error(f"Error updating record: {e}")
             
             with right_column:
                 st.subheader("Production Data Visualization")
@@ -1108,137 +1125,137 @@ with st.expander("Single Well Updating", expanded=False):
         st.warning("No data available or primary key not found in table")
         
 # ----- SECTION 2: BULK DATA UPDATING -----
-with st.expander("Bulk Data Updating", expanded=False):
-    st.subheader("Update Multiple Records")
+# with st.expander("Bulk Data Updating", expanded=False):
+#     st.subheader("Update Multiple Records")
     
-    if not data.empty:
-        with st.form("bulk_update_form"):
-            st.subheader("Bulk Update Fields")
+#     if not data.empty:
+#         with st.form("bulk_update_form"):
+#             st.subheader("Bulk Update Fields")
             
-            # Get ordered fields that actually exist in the table
-            existing_oil_fields = get_ordered_fields(oil_fields, table_columns)
-            existing_gas_fields = get_ordered_fields(gas_fields, table_columns)
+#             # Get ordered fields that actually exist in the table
+#             existing_oil_fields = get_ordered_fields(oil_fields, table_columns)
+#             existing_gas_fields = get_ordered_fields(gas_fields, table_columns)
             
-            # Create two columns for oil and gas parameters
-            oil_col, gas_col = st.columns(2)
+#             # Create two columns for oil and gas parameters
+#             oil_col, gas_col = st.columns(2)
             
-            # Oil parameters column
-            with oil_col:
-                st.markdown("### Oil Parameters")
-                oil_bulk_values = {}
+#             # Oil parameters column
+#             with oil_col:
+#                 st.markdown("### Oil Parameters")
+#                 oil_bulk_values = {}
                 
-                for field, data_type in existing_oil_fields:
-                    oil_bulk_values[field] = st.text_input(f"New Value for {field}")
+#                 for field, data_type in existing_oil_fields:
+#                     oil_bulk_values[field] = st.text_input(f"New Value for {field}")
             
-            # Gas parameters column
-            with gas_col:
-                st.markdown("### Gas Parameters")
-                gas_bulk_values = {}
+#             # Gas parameters column
+#             with gas_col:
+#                 st.markdown("### Gas Parameters")
+#                 gas_bulk_values = {}
                 
-                for field, data_type in existing_gas_fields:
-                    gas_bulk_values[field] = st.text_input(f"New Value for {field}")
+#                 for field, data_type in existing_gas_fields:
+#                     gas_bulk_values[field] = st.text_input(f"New Value for {field}")
             
-            # Other fields (not oil or gas specific)
-            st.markdown("### Other Parameters")
-            other_bulk_values = {}
-            for col in table_columns:
-                if (col != primary_key and 
-                    col.lower() != 'lease' and
-                    col not in oil_bulk_values and 
-                    col not in gas_bulk_values and
-                    not (col.startswith("OIL_") or col.startswith("GAS_"))):
-                    other_bulk_values[col] = st.text_input(f"New Value for {col}")
+#             # Other fields (not oil or gas specific)
+#             st.markdown("### Other Parameters")
+#             other_bulk_values = {}
+#             for col in table_columns:
+#                 if (col != primary_key and 
+#                     col.lower() != 'lease' and
+#                     col not in oil_bulk_values and 
+#                     col not in gas_bulk_values and
+#                     not (col.startswith("OIL_") or col.startswith("GAS_"))):
+#                     other_bulk_values[col] = st.text_input(f"New Value for {col}")
             
-            # Combine all bulk values
-            bulk_values = {**oil_bulk_values, **gas_bulk_values, **other_bulk_values}
+#             # Combine all bulk values
+#             bulk_values = {**oil_bulk_values, **gas_bulk_values, **other_bulk_values}
             
-            # Option to apply calculated decline rates
-            apply_calc_decline = st.checkbox("Apply calculated decline rates (if available)", key="bulk_apply_decline")
+#             # Option to apply calculated decline rates
+#             apply_calc_decline = st.checkbox("Apply calculated decline rates (if available)", key="bulk_apply_decline")
             
-            submit_bulk = st.form_submit_button("Execute Bulk Update")
+#             submit_bulk = st.form_submit_button("Execute Bulk Update")
 
-        if submit_bulk:
-            update_errors = []
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            success_count = 0
+#         if submit_bulk:
+#             update_errors = []
+#             progress_bar = st.progress(0)
+#             status_text = st.empty()
+#             success_count = 0
             
-            # Loop through each record in the filtered table data
-            for i, (index, row) in enumerate(data.iterrows()):
-                api_uwi = row[primary_key]
-                status_text.text(f"Updating {i+1}/{len(data)}: {api_uwi}")
+#             # Loop through each record in the filtered table data
+#             for i, (index, row) in enumerate(data.iterrows()):
+#                 api_uwi = row[primary_key]
+#                 status_text.text(f"Updating {i+1}/{len(data)}: {api_uwi}")
                 
-                # Copy bulk user inputs
-                record_bulk_values = bulk_values.copy()
+#                 # Copy bulk user inputs
+#                 record_bulk_values = bulk_values.copy()
                 
-                # Apply decline rates if checkbox is selected and values exist in session state
-                if apply_calc_decline and api_uwi in st.session_state['calculated_declines']:
-                    oil_decline, gas_decline = st.session_state['calculated_declines'][api_uwi]
-                    record_bulk_values["OIL_EMPIRICAL_DECLINE"] = str(oil_decline)
-                    record_bulk_values["GAS_EMPIRICAL_DECLINE"] = str(gas_decline)
+#                 # Apply decline rates if checkbox is selected and values exist in session state
+#                 if apply_calc_decline and api_uwi in st.session_state['calculated_declines']:
+#                     oil_decline, gas_decline = st.session_state['calculated_declines'][api_uwi]
+#                     record_bulk_values["OIL_EMPIRICAL_DECLINE"] = str(oil_decline)
+#                     record_bulk_values["GAS_EMPIRICAL_DECLINE"] = str(gas_decline)
                 
-                # Auto-populate last production dates if those fields exist
-                if ('LAST_OIL_DATE' in table_columns or 'LAST_GAS_DATE' in table_columns or 
-                    'LAST_PROD_DATE' in table_columns):
-                    last_oil_date, last_gas_date = get_last_production_dates(api_uwi)
+#                 # Auto-populate last production dates if those fields exist
+#                 if ('LAST_OIL_DATE' in table_columns or 'LAST_GAS_DATE' in table_columns or 
+#                     'LAST_PROD_DATE' in table_columns):
+#                     last_oil_date, last_gas_date = get_last_production_dates(api_uwi)
                     
-                    # Update individual date fields if they exist
-                    if last_oil_date is not None and 'LAST_OIL_DATE' in table_columns:
-                        record_bulk_values['LAST_OIL_DATE'] = str(last_oil_date)
-                    if last_gas_date is not None and 'LAST_GAS_DATE' in table_columns:
-                        record_bulk_values['LAST_GAS_DATE'] = str(last_gas_date)
+#                     # Update individual date fields if they exist
+#                     if last_oil_date is not None and 'LAST_OIL_DATE' in table_columns:
+#                         record_bulk_values['LAST_OIL_DATE'] = str(last_oil_date)
+#                     if last_gas_date is not None and 'LAST_GAS_DATE' in table_columns:
+#                         record_bulk_values['LAST_GAS_DATE'] = str(last_gas_date)
                     
-                    # Determine and update the most recent production date for LAST_PROD_DATE
-                    if 'LAST_PROD_DATE' in table_columns:
-                        most_recent_date = None
-                        if last_oil_date is not None and last_gas_date is not None:
-                            most_recent_date = max(last_oil_date, last_gas_date)
-                        elif last_oil_date is not None:
-                            most_recent_date = last_oil_date
-                        elif last_gas_date is not None:
-                            most_recent_date = last_gas_date
+#                     # Determine and update the most recent production date for LAST_PROD_DATE
+#                     if 'LAST_PROD_DATE' in table_columns:
+#                         most_recent_date = None
+#                         if last_oil_date is not None and last_gas_date is not None:
+#                             most_recent_date = max(last_oil_date, last_gas_date)
+#                         elif last_oil_date is not None:
+#                             most_recent_date = last_oil_date
+#                         elif last_gas_date is not None:
+#                             most_recent_date = last_gas_date
                         
-                        if most_recent_date is not None:
-                            record_bulk_values['LAST_PROD_DATE'] = str(most_recent_date)
+#                         if most_recent_date is not None:
+#                             record_bulk_values['LAST_PROD_DATE'] = str(most_recent_date)
                 
-                # Auto-populate Qi values if those fields exist
-                if 'OIL_CALC_QI' in table_columns or 'GAS_CALC_QI' in table_columns:
-                    oil_qi, gas_qi = calculate_qi_values(api_uwi)
-                    if oil_qi > 0 and 'OIL_CALC_QI' in table_columns:
-                        record_bulk_values['OIL_CALC_QI'] = str(oil_qi)
-                    if gas_qi > 0 and 'GAS_CALC_QI' in table_columns:
-                        record_bulk_values['GAS_CALC_QI'] = str(gas_qi)
+#                 # Auto-populate Qi values if those fields exist
+#                 if 'OIL_CALC_QI' in table_columns or 'GAS_CALC_QI' in table_columns:
+#                     oil_qi, gas_qi = calculate_qi_values(api_uwi)
+#                     if oil_qi > 0 and 'OIL_CALC_QI' in table_columns:
+#                         record_bulk_values['OIL_CALC_QI'] = str(oil_qi)
+#                     if gas_qi > 0 and 'GAS_CALC_QI' in table_columns:
+#                         record_bulk_values['GAS_CALC_QI'] = str(gas_qi)
 
-                # Only update if there are values to set
-                if any(v for v in record_bulk_values.values()):
-                    # Handle DATE fields and empty values (convert empty strings to NULL)
-                    record_bulk_values = {
-                        col: f"'{value}'" if value else "NULL"
-                        if table_columns.get(col, "") != "DATE" else "NULL" if value == "" else f"'{value}'"
-                        for col, value in record_bulk_values.items() if value
-                    }
+#                 # Only update if there are values to set
+#                 if any(v for v in record_bulk_values.values()):
+#                     # Handle DATE fields and empty values (convert empty strings to NULL)
+#                     record_bulk_values = {
+#                         col: f"'{value}'" if value else "NULL"
+#                         if table_columns.get(col, "") != "DATE" else "NULL" if value == "" else f"'{value}'"
+#                         for col, value in record_bulk_values.items() if value
+#                     }
 
-                    if record_bulk_values:
-                        set_clause = ", ".join([f"{col} = {value}" for col, value in record_bulk_values.items()])
-                        sql = f"UPDATE {table_name} SET {set_clause} WHERE {primary_key} = '{api_uwi}'"
-                        try:
-                            conn.sql(sql).collect()
-                            success_count += 1
-                        except Exception as e:
-                            update_errors.append(f"Error updating record {api_uwi}: {e}")
+#                     if record_bulk_values:
+#                         set_clause = ", ".join([f"{col} = {value}" for col, value in record_bulk_values.items()])
+#                         sql = f"UPDATE {table_name} SET {set_clause} WHERE {primary_key} = '{api_uwi}'"
+#                         try:
+#                             conn.sql(sql).collect()
+    #                         success_count += 1
+    #                     except Exception as e:
+    #                         update_errors.append(f"Error updating record {api_uwi}: {e}")
                 
-                # Update progress
-                progress_bar.progress((i + 1) / len(data))
+    #             # Update progress
+    #             progress_bar.progress((i + 1) / len(data))
 
-            if update_errors:
-                st.error("Some updates failed:\n" + "\n".join(update_errors))
+    #         if update_errors:
+    #             st.error("Some updates failed:\n" + "\n".join(update_errors))
             
-            status_text.text(f"Update complete! Successfully updated {success_count} records.")
-            if success_count > 0:
-                st.success(f"Successfully updated {success_count} records")
-                st.cache_data.clear()
-    else:
-        st.warning("No data available for bulk update")
+    #         status_text.text(f"Update complete! Successfully updated {success_count} records.")
+    #         if success_count > 0:
+    #             st.success(f"Successfully updated {success_count} records")
+    #             st.cache_data.clear()
+    # else:
+    #     st.warning("No data available for bulk update")
 
 # ----- SECTION 3: BULK DECLINE CALCULATION -----
 with st.expander("Bulk Decline Calculation", expanded=False):
@@ -1427,64 +1444,65 @@ with st.expander("Bulk Decline Calculation", expanded=False):
             
             # Option to update database with calculated values
             if st.button("Apply Calculated Rates to Database"):
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                update_errors = []
-                success_count = 0
+                pass
+                # progress_bar = st.progress(0)
+                # status_text = st.empty()
+                # update_errors = []
+                # success_count = 0
                 
-                for i, api_uwi in enumerate(calc_values.keys()):
-                    status_text.text(f"Updating {i+1}/{len(calc_values)}: {api_uwi}")
+                # for i, api_uwi in enumerate(calc_values.keys()):
+                #     status_text.text(f"Updating {i+1}/{len(calc_values)}: {api_uwi}")
                     
-                    # Get the calculated values for this well
-                    well_values = calc_values[api_uwi]
+                #     # Get the calculated values for this well
+                #     well_values = calc_values[api_uwi]
                     
-                    # Skip if no values to update
-                    if not well_values:
-                        continue
+                #     # Skip if no values to update
+                #     if not well_values:
+                #         continue
                     
-                    # Create SET clause with proper formatting for each data type
-                    set_parts = []
+                #     # Create SET clause with proper formatting for each data type
+                #     set_parts = []
                     
-                    for col, value in well_values.items():
-                        # Check if column exists in table
-                        if col in table_columns:
-                            # Format based on data type
-                            if col.startswith("LAST_") and table_columns[col] == "DATE":
-                                # Date format
-                                set_parts.append(f"{col} = '{value}'")
-                            elif isinstance(value, (int, float)):
-                                # Numeric format
-                                set_parts.append(f"{col} = {value}")
-                            else:
-                                # String format
-                                set_parts.append(f"{col} = '{value}'")
+                #     for col, value in well_values.items():
+                #         # Check if column exists in table
+                #         if col in table_columns:
+                #             # Format based on data type
+                #             if col.startswith("LAST_") and table_columns[col] == "DATE":
+                #                 # Date format
+                #                 set_parts.append(f"{col} = '{value}'")
+                #             elif isinstance(value, (int, float)):
+                #                 # Numeric format
+                #                 set_parts.append(f"{col} = {value}")
+                #             else:
+                #                 # String format
+                #                 set_parts.append(f"{col} = '{value}'")
                     
-                    # Only proceed if we have values to update
-                    if set_parts:
-                        set_clause = ", ".join(set_parts)
+                #     # Only proceed if we have values to update
+                #     if set_parts:
+                #         set_clause = ", ".join(set_parts)
                         
-                        # Build and execute SQL update
-                        sql = f"""
-                        UPDATE {table_name} 
-                        SET {set_clause}
-                        WHERE {primary_key} = '{api_uwi}'
-                        """
+                #         # Build and execute SQL update
+                #         sql = f"""
+                #         UPDATE {table_name} 
+                #         SET {set_clause}
+                #         WHERE {primary_key} = '{api_uwi}'
+                #         """
                         
-                        try:
-                            conn.sql(sql).collect()
-                            success_count += 1
-                        except Exception as e:
-                            update_errors.append(f"Error updating record {api_uwi}: {e}")
+                #         try:
+                #             conn.sql(sql).collect()
+                #             success_count += 1
+                #         except Exception as e:
+                #             update_errors.append(f"Error updating record {api_uwi}: {e}")
                     
-                    # Update progress
-                    progress_bar.progress((i + 1) / len(calc_values))
+                #     # Update progress
+                #     progress_bar.progress((i + 1) / len(calc_values))
                 
-                if update_errors:
-                    st.error("Some updates failed:\n" + "\n".join(update_errors))
+                # if update_errors:
+                #     st.error("Some updates failed:\n" + "\n".join(update_errors))
                 
-                status_text.text(f"Update complete! Successfully updated {success_count} records.")
-                if success_count > 0:
-                    st.success(f"Successfully updated {success_count} records with calculated values")
-                    st.cache_data.clear()
+                # status_text.text(f"Update complete! Successfully updated {success_count} records.")
+                # if success_count > 0:
+                #     st.success(f"Successfully updated {success_count} records with calculated values")
+                #     st.cache_data.clear()
     else:
         st.warning("No data available for bulk calculation")

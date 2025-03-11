@@ -1,0 +1,9 @@
+altair==5.5.0
+matplotlib==3.7.1
+numpy==1.25.0
+pandas==2.0.3
+pydeck==0.9.1
+scipy==1.11.1
+seaborn==0.13.2
+snowflake_connector_python==3.14.0
+streamlit==1.42.0
