@@ -1,4 +1,31 @@
 const ctx = document.getElementById('graph');
+const wellSelector = document.getElementById('well-selector');
+
+// Load FAST_EDIT wells
+fetch('/api/fast_edit_wells/')
+  .then(res => res.json())
+  .then(json => {
+    if (!json.wells) throw new Error("No wells returned");
+    wellSelector.innerHTML = '';
+    json.wells.forEach(well => {
+      const opt = document.createElement('option');
+      opt.value = well.api;
+      opt.textContent = `${well.name} (${well.trajectory})`;
+      wellSelector.appendChild(opt);
+    });
+
+    // Auto-load first well
+    fetchAndUpdateProduction(json.wells[0].api);
+  })
+  .catch(err => {
+    wellSelector.innerHTML = '<option>Error loading wells</option>';
+    console.error(err);
+  });
+
+wellSelector.addEventListener('change', (e) => {
+  const selectedAPI = e.target.value;
+  fetchAndUpdateProduction(selectedAPI);
+});
 
 let originX = 0;
 let originY = 0;
@@ -16,72 +43,13 @@ const lineData = {
         },
         {
             label: 'Oil Production (bbl)',
-            data: [
-                { x: '2020-01-01', y: 154.0 },
-                { x: '2020-02-01', y: 143.0 },
-                { x: '2020-03-01', y: 89.0 },
-                { x: '2020-04-01', y: 38.0 },
-                { x: '2020-05-01', y: 39.0 },
-                { x: '2020-06-01', y: 35.0 },
-                { x: '2020-07-01', y: 5.0 },
-                { x: '2020-08-01', y: 57.0 },
-                { x: '2020-09-01', y: 50.0 },
-                { x: '2020-10-01', y: 53.0 },
-                { x: '2020-11-01', y: 74.0 },
-                { x: '2020-12-01', y: 65.0 },
-                { x: '2021-01-01', y: 69.0 },
-                { x: '2021-02-01', y: 106.0 },
-                { x: '2021-03-01', y: 98.0 },
-                { x: '2021-04-01', y: 108.0 },
-                { x: '2021-05-01', y: 89.0 },
-                { x: '2021-06-01', y: 47.0 },
-                { x: '2021-07-01', y: 98.0 },
-                { x: '2021-08-01', y: 50.0 },
-                { x: '2021-09-01', y: 102.0 },
-                { x: '2021-10-01', y: 83.0 },
-                { x: '2021-11-01', y: 56.0 },
-                { x: '2021-12-01', y: 20.0 },
-                { x: '2022-01-01', y: 24.0 },
-                { x: '2022-02-01', y: 62.0 },
-                { x: '2022-03-01', y: 131.0 },
-                { x: '2022-04-01', y: 64.0 },
-                { x: '2022-05-01', y: 106.0 },
-                { x: '2022-06-01', y: 89.0 },
-                { x: '2022-07-01', y: 79.0 },
-                { x: '2022-08-01', y: 78.0 },
-                { x: '2022-09-01', y: 80.0 },
-                { x: '2022-10-01', y: 74.0 },
-                { x: '2022-11-01', y: 60.0 },
-                { x: '2022-12-01', y: 50.0 },
-                { x: '2023-01-01', y: 95.0 },
-                { x: '2023-02-01', y: 69.0 },
-                { x: '2023-03-01', y: 59.0 },
-                { x: '2023-05-01', y: 124.0 },
-                { x: '2023-06-01', y: 51.0 },
-                { x: '2023-07-01', y: 22.0 },
-                { x: '2023-08-01', y: 18.0 },
-                { x: '2023-09-01', y: 5.0 },
-                { x: '2023-10-01', y: 6.0 },
-                { x: '2023-11-01', y: 9.0 },
-                { x: '2023-12-01', y: 10.0 },
-                { x: '2024-02-01', y: 33.0 },
-                { x: '2024-03-01', y: 154.0 },
-                { x: '2024-04-01', y: 84.0 },
-                { x: '2024-05-01', y: 86.0 },
-                { x: '2024-06-01', y: 64.0 },
-                { x: '2024-07-01', y: 68.0 },
-                { x: '2024-08-01', y: 48.0 },
-                { x: '2024-09-01', y: 61.0 },
-                { x: '2024-10-01', y: 66.0 },
-                { x: '2024-11-01', y: 60.0 },
-                { x: '2024-12-01', y: 42.0 }
-              ],
+            data: [],
             borderColor: 'green',
             backgroundColor: 'green',
             showLine: true,
             fill: false,
             pointRadius: 3
-          }          
+          }         
     ]
 };
 
