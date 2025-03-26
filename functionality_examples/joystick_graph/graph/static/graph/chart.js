@@ -1,6 +1,28 @@
 const ctx = document.getElementById('graph');
 const wellSelector = document.getElementById('well-selector');
 
+function fetchAndUpdateProduction(api_uwi) {
+    fetch(`/get_production/?api_uwi=${api_uwi}`)
+      .then(res => res.json())
+      .then(json => {
+        if (!json.data || json.data.length === 0) {
+          console.error("No production data found for well:", api_uwi);
+          return;
+        }
+  
+        chart.data.datasets[1].data = json.data;
+  
+        // Update forecast origin to last historical data point
+        const lastPoint = json.data[json.data.length - 1];
+        currentX = 0;
+        currentY = lastPoint.y;
+        sendUpdate(); // triggers updateChart
+      })
+      .catch(err => {
+        console.error("Error fetching production data:", err);
+      });
+  }  
+  
 // Load FAST_EDIT wells
 fetch('/api/fast_edit_wells/')
   .then(res => res.json())

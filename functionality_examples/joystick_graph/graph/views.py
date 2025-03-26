@@ -55,16 +55,17 @@ def get_fast_edit_wells():
     session = Session.builder.configs(conn).create()
     
     # Join ECON_INPUT with vw_well to get well names and trajectory
-    query = """
+    df_snow = session.sql("""
     SELECT e.*, w.WELLNAME, w.TRAJECTORY
     FROM wells.minerals.ECON_INPUT e
     JOIN wells.minerals.vw_well_input w
     ON e.API_UWI = w.API_UWI
     WHERE e.FAST_EDIT = 1
     ORDER BY w.WELLNAME
-    """
-    result = session.sql(query).to_pandas()
-    return result
+    """)
+    rows = df_snow.collect()  # returns list of Row objects
+    records = [r.as_dict() for r in rows]
+    return pd.DataFrame.from_records(records)
 
 @csrf_exempt
 def get_fast_edit_wells_json(request):
