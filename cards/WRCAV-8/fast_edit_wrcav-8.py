@@ -4,16 +4,6 @@ import numpy as np
 import altair as alt
 from io import BytesIO
 import base64
-import snowflake.connector
-from snowflake.snowpark.session import Session
-
-## eliis snwoflake connection parameters
-conn = {'user':"ELII",
-    'password':"Elii123456789!",
-    'account':"CMZNSCB-MU47932",
-    'warehouse':"COMPUTE_WH",
-    'database':"WELLS",
-    'schema':"MINERALS"}
 
 #############################################
 # SECTION 1: APP CONFIGURATION
@@ -101,15 +91,205 @@ if 'wells_data' not in st.session_state:
     st.session_state['wells_data'] = None
 
 #############################################
-# SECTION 3: FORECAST FUNCTIONS
+# SECTION 3: DATABASE CONNECTION FUNCTIONS
 #############################################
 
-# Include the SingleWellForecast function (full economic limit)
+@st.cache_resource
+def get_session():
+    """Get the current Snowpark session"""
+    try:
+        from snowflake.snowpark.context import get_active_session
+        return get_active_session()
+    except Exception as e:
+        st.error(f"Error getting Snowflake session: {e}")
+        return None
+
+@st.cache_data(ttl=60)
+def get_fast_edit_wells():
+    """Get all wells with FAST_EDIT=1"""
+    try:
+        from snowflake.snowpark.context import get_active_session
+        session = get_active_session()
+        
+        # Join ECON_INPUT with vw_well to get well names and trajectory
+        query = """
+        SELECT e.*, w.WELLNAME, w.TRAJECTORY
+        FROM wells.minerals.ECON_INPUT e
+        JOIN wells.minerals.vw_well_input w
+        ON e.API_UWI = w.API_UWI
+        WHERE e.FAST_EDIT = 1
+        ORDER BY w.WELLNAME
+        """
+        
+        result = session.sql(query).to_pandas()
+        return result
+    except Exception as e:
+        st.error(f"Error fetching fast edit wells: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=600)
+def get_production_data(api_uwi):
+    """Get production data for a well"""
+    try:
+        from snowflake.snowpark.context import get_active_session
+        session = get_active_session()
+        
+        query = f"""
+        SELECT API_UWI, ProducingMonth, LIQUIDSPROD_BBL, GASPROD_MCF
+        FROM wells.minerals.raw_prod_data
+        WHERE API_UWI = '{api_uwi}'
+        ORDER BY ProducingMonth
+        """
+        
+        result = session.sql(query).to_pandas()
+        return result
+    except Exception as e:
+        st.error(f"Error fetching production data: {e}")
+        return pd.DataFrame()
+
+def update_well_parameters(api_uwi, update_values):
+    """Update well parameters in database"""
+    try:
+        from snowflake.snowpark.context import get_active_session
+        session = get_active_session()
+        
+        # Handle NULL values in update statement
+        set_clauses = []
+        for col, value in update_values.items():
+            if value == '' or value is None:
+                set_clauses.append(f"{col} = NULL")
+            else:
+                set_clauses.append(f"{col} = '{value}'")
+        
+        set_clause = ", ".join(set_clauses)
+        
+        sql = f"UPDATE wells.minerals.ECON_INPUT SET {set_clause} WHERE API_UWI = '{api_uwi}'"
+        session.sql(sql).collect()
+        
+        # Clear the cache to force a refresh of the wells data
+        get_fast_edit_wells.clear()
+        
+        return True, "Well updated successfully"
+    except Exception as e:
+        return False, f"Error updating well: {e}"
+
+#############################################
+# SECTION 4: HELPER FUNCTIONS
+#############################################
+
+# Function to validate and fix forecast parameters
+def fix_forecast_data_issues(well_row):
+    """Fix common issues with forecast parameters"""
+    fixed_row = well_row.copy()
+    
+    # Fix decline types (ensure they are E or H)
+    if pd.isna(fixed_row['OIL_DECLINE_TYPE']) or fixed_row['OIL_DECLINE_TYPE'] not in ['E', 'H', 'EXP', 'HYP']:
+        fixed_row['OIL_DECLINE_TYPE'] = 'E'  # Default to exponential
+    elif fixed_row['OIL_DECLINE_TYPE'] == 'EXP':
+        fixed_row['OIL_DECLINE_TYPE'] = 'E'
+    elif fixed_row['OIL_DECLINE_TYPE'] == 'HYP':
+        fixed_row['OIL_DECLINE_TYPE'] = 'H'
+    
+    if pd.isna(fixed_row['GAS_DECLINE_TYPE']) or fixed_row['GAS_DECLINE_TYPE'] not in ['E', 'H', 'EXP', 'HYP']:
+        fixed_row['GAS_DECLINE_TYPE'] = 'E'  # Default to exponential
+    elif fixed_row['GAS_DECLINE_TYPE'] == 'EXP':
+        fixed_row['GAS_DECLINE_TYPE'] = 'E'
+    elif fixed_row['GAS_DECLINE_TYPE'] == 'HYP':
+        fixed_row['GAS_DECLINE_TYPE'] = 'H'
+    
+    # Ensure decline rates are valid
+    if pd.isna(fixed_row['OIL_USER_DECLINE']) and pd.isna(fixed_row['OIL_EMPIRICAL_DECLINE']):
+        fixed_row['OIL_EMPIRICAL_DECLINE'] = 0.06  # Default value
+    
+    if pd.isna(fixed_row['GAS_USER_DECLINE']) and pd.isna(fixed_row['GAS_EMPIRICAL_DECLINE']):
+        fixed_row['GAS_EMPIRICAL_DECLINE'] = 0.06  # Default value
+    
+    # Ensure b-factors are valid for hyperbolic decline
+    if fixed_row['OIL_DECLINE_TYPE'] == 'H':
+        if pd.isna(fixed_row['OIL_USER_B_FACTOR']) and pd.isna(fixed_row['OIL_CALC_B_FACTOR']):
+            fixed_row['OIL_CALC_B_FACTOR'] = 1.0  # Default value
+    
+    if fixed_row['GAS_DECLINE_TYPE'] == 'H':
+        if pd.isna(fixed_row['GAS_USER_B_FACTOR']) and pd.isna(fixed_row['GAS_CALC_B_FACTOR']):
+            fixed_row['GAS_CALC_B_FACTOR'] = 1.0  # Default value
+    
+    # Ensure minimum values are valid
+    if pd.isna(fixed_row['OIL_Q_MIN']) or fixed_row['OIL_Q_MIN'] <= 0:
+        fixed_row['OIL_Q_MIN'] = 1.0  # Default value
+    
+    if pd.isna(fixed_row['GAS_Q_MIN']) or fixed_row['GAS_Q_MIN'] <= 0:
+        fixed_row['GAS_Q_MIN'] = 10.0  # Default value
+    
+    if pd.isna(fixed_row['OIL_D_MIN']) or fixed_row['OIL_D_MIN'] <= 0:
+        fixed_row['OIL_D_MIN'] = 0.06  # Default value
+    
+    if pd.isna(fixed_row['GAS_D_MIN']) or fixed_row['GAS_D_MIN'] <= 0:
+        fixed_row['GAS_D_MIN'] = 0.06  # Default value
+    
+    return fixed_row
+
+# Function to get the next well in the list
+def get_next_well(current_api, wells_data):
+    
+    # Get the list of active well APIs
+    active_well_apis = wells_data['API_UWI'].tolist()
+
+    # Find current index in the active wells list
+    current_idx = active_well_apis.index(current_api)
+    # Get next well index, wrapping around to the beginning if needed
+    next_idx = (current_idx + 1) % len(active_well_apis)
+    # Return the next well API
+    return active_well_apis[next_idx]
+
+# Function to refresh the wells data from database
+def refresh_wells_data():
+    """Refresh the wells data from the database"""
+    fresh_data = get_fast_edit_wells()
+    st.session_state['wells_data'] = fresh_data
+    return fresh_data
+
+# Function to get last production dates for oil and gas
+def get_last_production_dates(api_uwi, production_data):
+    """Get the last production dates for oil and gas"""
+    if production_data.empty:
+        return None, None
+    
+    try:
+        # Ensure LIQUIDSPROD_BBL and GASPROD_MCF are numeric
+        production_data['LIQUIDSPROD_BBL'] = pd.to_numeric(production_data['LIQUIDSPROD_BBL'], errors='coerce').fillna(0)
+        production_data['GASPROD_MCF'] = pd.to_numeric(production_data['GASPROD_MCF'], errors='coerce').fillna(0)
+        
+        # Find the last non-zero oil production
+        non_zero_oil = production_data[production_data['LIQUIDSPROD_BBL'] > 0]
+        last_oil_date = None
+        if not non_zero_oil.empty:
+            # Sort by date to get the most recent
+            non_zero_oil = non_zero_oil.sort_values('PRODUCINGMONTH')
+            last_oil_date = non_zero_oil['PRODUCINGMONTH'].iloc[-1]
+        
+        # Find the last non-zero gas production
+        non_zero_gas = production_data[production_data['GASPROD_MCF'] > 0]
+        last_gas_date = None
+        if not non_zero_gas.empty:
+            # Sort by date to get the most recent
+            non_zero_gas = non_zero_gas.sort_values('PRODUCINGMONTH')
+            last_gas_date = non_zero_gas['PRODUCINGMONTH'].iloc[-1]
+        
+        return last_oil_date, last_gas_date
+    except Exception as e:
+        print(f"Error in get_last_production_dates: {e}")
+        return None, None
+
+#############################################
+# SECTION 5: FORECAST FUNCTIONS
+#############################################
+
+# Updated SingleWellForecast function with custom forecast start dates
 def SingleWellForecast(well_api, econ_input_df, raw_prod_data_df):
     """
     Generates a production forecast for a single well using either exponential or 
-    hyperbolic decline based on decline type specified. Removed NRI adjustments
-    and focuses on gross volumes only.
+    hyperbolic decline based on decline type specified. Uses FCST_START_OIL and 
+    FCST_START_GAS dates to determine when to start the respective forecasts.
     
     Parameters:
     -----------
@@ -221,13 +401,30 @@ def SingleWellForecast(well_api, econ_input_df, raw_prod_data_df):
     well_row = well_data.iloc[0]
     
     try:
-        # Get the last production date and add 1 month for forecast start
+        # Get the last production date
         last_prod_date = well_production['PRODUCINGMONTH'].max()
-        fcst_start = (pd.to_datetime(last_prod_date) + pd.DateOffset(months=1)).replace(day=1)
         
-        # Initialize forecast period - using original 600 months (run to economic limit)
-        max_months = 600  # Run to economic limit or maximum time
-        dates = pd.date_range(start=fcst_start, periods=max_months, freq='MS')
+        # Get forecast start dates from ECON_INPUT
+        oil_fcst_start = pd.to_datetime(well_row['FCST_START_OIL']) if pd.notna(well_row['FCST_START_OIL']) else None
+        gas_fcst_start = pd.to_datetime(well_row['FCST_START_GAS']) if pd.notna(well_row['FCST_START_GAS']) else None
+        
+        # If forecast start dates are not provided, use last production date + 1 month as default
+        default_fcst_start = (pd.to_datetime(last_prod_date) + pd.DateOffset(months=1)).replace(day=1)
+        
+        # Use the specified dates or the default if not specified
+        oil_fcst_start = oil_fcst_start if oil_fcst_start is not None else default_fcst_start
+        gas_fcst_start = gas_fcst_start if gas_fcst_start is not None else default_fcst_start
+        
+        # Ensure forecast start dates are on the first day of the month
+        oil_fcst_start = oil_fcst_start.replace(day=1)
+        gas_fcst_start = gas_fcst_start.replace(day=1)
+        
+        # Find the earliest forecast start date to initialize the forecast period
+        earliest_fcst_start = min(oil_fcst_start, gas_fcst_start)
+        
+        # Initialize forecast period - use longer period to ensure we capture all forecast data
+        max_months = 600
+        dates = pd.date_range(start=earliest_fcst_start, periods=max_months, freq='MS')
         
         # Initialize an empty DataFrame for this well's forecasts
         well_fcst = pd.DataFrame({'PRODUCINGMONTH': dates})
@@ -240,7 +437,8 @@ def SingleWellForecast(well_api, econ_input_df, raw_prod_data_df):
             gas_qf = float(well_row['GAS_Q_MIN'])
             
             if gas_qi > gas_qf:
-                last_gas_prod = well_production[well_production['PRODUCINGMONTH'] <= fcst_start]['GASPROD_MCF'].tail(3)
+                # Use the gas forecast start date to determine the reference production data
+                last_gas_prod = well_production[well_production['PRODUCINGMONTH'] <= gas_fcst_start]['GASPROD_MCF'].tail(3)
                 if not last_gas_prod.empty:
                     gas_qi = min(gas_qi, last_gas_prod.mean() * 1.1)
                 
@@ -262,9 +460,20 @@ def SingleWellForecast(well_api, econ_input_df, raw_prod_data_df):
                 )
                 
                 if len(gas_rates) > 0:
-                    data_length = len(gas_rates)
-                    well_fcst.loc[:data_length-1, 'GasFcst_MCF'] = gas_rates
-                    well_fcst.loc[:data_length-1, 'Gas_Decline_Type'] = gas_decline_types
+                    # Calculate the index offset for gas forecast start
+                    gas_offset = (gas_fcst_start - earliest_fcst_start).days // 30
+                    gas_offset = max(0, gas_offset)  # Ensure non-negative
+                    
+                    # Limit to available array length
+                    data_length = min(len(gas_rates), len(well_fcst) - gas_offset)
+                    
+                    # Insert gas forecast at the correct position
+                    well_fcst.loc[gas_offset:gas_offset+data_length-1, 'GasFcst_MCF'] = gas_rates[:data_length]
+                    well_fcst.loc[gas_offset:gas_offset+data_length-1, 'Gas_Decline_Type'] = gas_decline_types[:data_length]
+                    
+                    # Add gas forecast start date for reference
+                    well_fcst['GasFcst_Start_Date'] = gas_fcst_start
+                    
                     has_forecast = True
                     
         except Exception as e:
@@ -277,7 +486,8 @@ def SingleWellForecast(well_api, econ_input_df, raw_prod_data_df):
             oil_qf = float(well_row['OIL_Q_MIN'])
             
             if oil_qi > oil_qf:
-                last_oil_prod = well_production[well_production['PRODUCINGMONTH'] <= fcst_start]['LIQUIDSPROD_BBL'].tail(3)
+                # Use the oil forecast start date to determine the reference production data
+                last_oil_prod = well_production[well_production['PRODUCINGMONTH'] <= oil_fcst_start]['LIQUIDSPROD_BBL'].tail(3)
                 if not last_oil_prod.empty:
                     oil_qi = min(oil_qi, last_oil_prod.mean() * 1.1)
                 
@@ -299,9 +509,20 @@ def SingleWellForecast(well_api, econ_input_df, raw_prod_data_df):
                 )
                 
                 if len(oil_rates) > 0:
-                    data_length = len(oil_rates)
-                    well_fcst.loc[:data_length-1, 'OilFcst_BBL'] = oil_rates
-                    well_fcst.loc[:data_length-1, 'Oil_Decline_Type'] = oil_decline_types
+                    # Calculate the index offset for oil forecast start
+                    oil_offset = (oil_fcst_start - earliest_fcst_start).days // 30
+                    oil_offset = max(0, oil_offset)  # Ensure non-negative
+                    
+                    # Limit to available array length
+                    data_length = min(len(oil_rates), len(well_fcst) - oil_offset)
+                    
+                    # Insert oil forecast at the correct position
+                    well_fcst.loc[oil_offset:oil_offset+data_length-1, 'OilFcst_BBL'] = oil_rates[:data_length]
+                    well_fcst.loc[oil_offset:oil_offset+data_length-1, 'Oil_Decline_Type'] = oil_decline_types[:data_length]
+                    
+                    # Add oil forecast start date for reference
+                    well_fcst['OilFcst_Start_Date'] = oil_fcst_start
+                    
                     has_forecast = True
                     
         except Exception as e:
@@ -329,6 +550,7 @@ def SingleWellForecast(well_api, econ_input_df, raw_prod_data_df):
     
     # Combine forecasts with historical data
     if not well_fcst.empty:
+        # Handle potential duplicate dates between historical and forecast data
         final_df = pd.merge(aggregated_data, well_fcst, on='PRODUCINGMONTH', how='outer')
     else:
         final_df = aggregated_data.copy()
@@ -338,45 +560,98 @@ def SingleWellForecast(well_api, econ_input_df, raw_prod_data_df):
     # Sort by date for cumulative calculations
     final_df = final_df.sort_values('PRODUCINGMONTH')
     
-    # Calculate forecast cumulatives
-    gas_idx = final_df['CumGas_MCF'].last_valid_index()
-    oil_idx = final_df['CumLiquids_BBL'].last_valid_index()
+    # Calculate forecast cumulatives correctly handling custom forecast start dates
     
-    if gas_idx is not None:
-        last_cum_gas = final_df.loc[gas_idx, 'CumGas_MCF']
-        mask = final_df.index > gas_idx
-        final_df.loc[mask, 'GasFcstCum_MCF'] = (
-            last_cum_gas + final_df.loc[mask, 'GasFcst_MCF'].fillna(0).cumsum()
-        )
+    # For gas forecast cumulatives
+    if 'GasFcst_MCF' in final_df.columns and final_df['GasFcst_MCF'].notna().any():
+        # Find the gas forecast start date
+        gas_fcst_start_date = final_df['GasFcst_Start_Date'].iloc[0] if 'GasFcst_Start_Date' in final_df.columns else None
+        
+        if gas_fcst_start_date is not None:
+            # Get the last actual production before forecast start
+            gas_hist_before_fcst = final_df[final_df['PRODUCINGMONTH'] < gas_fcst_start_date]
+            last_cum_gas = 0 if gas_hist_before_fcst.empty else gas_hist_before_fcst['CumGas_MCF'].iloc[-1]
+            
+            # Calculate cumulative from forecast start date
+            fcst_mask = final_df['PRODUCINGMONTH'] >= gas_fcst_start_date
+            final_df.loc[fcst_mask, 'GasFcstCum_MCF'] = final_df.loc[fcst_mask, 'GasFcst_MCF'].fillna(0).cumsum() + last_cum_gas
+        else:
+            # Fallback to previous method if forecast start date isn't available
+            gas_idx = final_df['CumGas_MCF'].last_valid_index()
+            if gas_idx is not None:
+                last_cum_gas = final_df.loc[gas_idx, 'CumGas_MCF']
+                mask = final_df.index > gas_idx
+                final_df.loc[mask, 'GasFcstCum_MCF'] = last_cum_gas + final_df.loc[mask, 'GasFcst_MCF'].fillna(0).cumsum()
     
-    if oil_idx is not None:
-        last_cum_oil = final_df.loc[oil_idx, 'CumLiquids_BBL']
-        mask = final_df.index > oil_idx
-        final_df.loc[mask, 'OilFcstCum_BBL'] = (
-            last_cum_oil + final_df.loc[mask, 'OilFcst_BBL'].fillna(0).cumsum()
-        )
+    # For oil forecast cumulatives
+    if 'OilFcst_BBL' in final_df.columns and final_df['OilFcst_BBL'].notna().any():
+        # Find the oil forecast start date
+        oil_fcst_start_date = final_df['OilFcst_Start_Date'].iloc[0] if 'OilFcst_Start_Date' in final_df.columns else None
+        
+        if oil_fcst_start_date is not None:
+            # Get the last actual production before forecast start
+            oil_hist_before_fcst = final_df[final_df['PRODUCINGMONTH'] < oil_fcst_start_date]
+            last_cum_oil = 0 if oil_hist_before_fcst.empty else oil_hist_before_fcst['CumLiquids_BBL'].iloc[-1]
+            
+            # Calculate cumulative from forecast start date
+            fcst_mask = final_df['PRODUCINGMONTH'] >= oil_fcst_start_date
+            final_df.loc[fcst_mask, 'OilFcstCum_BBL'] = final_df.loc[fcst_mask, 'OilFcst_BBL'].fillna(0).cumsum() + last_cum_oil
+        else:
+            # Fallback to previous method if forecast start date isn't available
+            oil_idx = final_df['CumLiquids_BBL'].last_valid_index()
+            if oil_idx is not None:
+                last_cum_oil = final_df.loc[oil_idx, 'CumLiquids_BBL']
+                mask = final_df.index > oil_idx
+                final_df.loc[mask, 'OilFcstCum_BBL'] = last_cum_oil + final_df.loc[mask, 'OilFcst_BBL'].fillna(0).cumsum()
+    
+    # Create blended columns - properly handling custom forecast start dates
+    
+    # For oil blend, use historical data before FCST_START_OIL and forecast data after
+    oil_fcst_start_date = final_df['OilFcst_Start_Date'].iloc[0] if 'OilFcst_Start_Date' in final_df.columns else None
+    if oil_fcst_start_date is not None:
+        # Use historical production before forecast start, and forecast after
+        final_df['Oil_Blend'] = np.nan
+        before_fcst_mask = final_df['PRODUCINGMONTH'] < oil_fcst_start_date
+        after_fcst_mask = final_df['PRODUCINGMONTH'] >= oil_fcst_start_date
+        
+        final_df.loc[before_fcst_mask, 'Oil_Blend'] = final_df.loc[before_fcst_mask, 'LIQUIDSPROD_BBL']
+        final_df.loc[after_fcst_mask, 'Oil_Blend'] = final_df.loc[after_fcst_mask, 'OilFcst_BBL']
+    else:
+        # Fallback to the original blend approach
+        final_df['Oil_Blend'] = final_df['LIQUIDSPROD_BBL'].fillna(final_df['OilFcst_BBL'])
+    
+    # For gas blend, use historical data before FCST_START_GAS and forecast data after
+    gas_fcst_start_date = final_df['GasFcst_Start_Date'].iloc[0] if 'GasFcst_Start_Date' in final_df.columns else None
+    if gas_fcst_start_date is not None:
+        # Use historical production before forecast start, and forecast after
+        final_df['Gas_Blend'] = np.nan
+        before_fcst_mask = final_df['PRODUCINGMONTH'] < gas_fcst_start_date
+        after_fcst_mask = final_df['PRODUCINGMONTH'] >= gas_fcst_start_date
+        
+        final_df.loc[before_fcst_mask, 'Gas_Blend'] = final_df.loc[before_fcst_mask, 'GASPROD_MCF']
+        final_df.loc[after_fcst_mask, 'Gas_Blend'] = final_df.loc[after_fcst_mask, 'GasFcst_MCF']
+    else:
+        # Fallback to the original blend approach
+        final_df['Gas_Blend'] = final_df['GASPROD_MCF'].fillna(final_df['GasFcst_MCF'])
     
     # Replace zeros with NaN for numeric columns
     numeric_cols = final_df.select_dtypes(include=[np.number]).columns.tolist()
     final_df[numeric_cols] = final_df[numeric_cols].replace(0, np.nan)
     
-    # Filter to end of 2050 (keeping original limit)
+    # Filter to end of 2050
     final_df = final_df[final_df['PRODUCINGMONTH'] <= '2050-12-31']
     
     # Add End of Month date column
     final_df['EOM_Date'] = final_df['PRODUCINGMONTH'].dt.to_period('M').dt.to_timestamp('M')
     
-    # Create blended columns
-    final_df['Oil_Blend'] = final_df['LIQUIDSPROD_BBL'].fillna(final_df['OilFcst_BBL'])
-    final_df['Gas_Blend'] = final_df['GASPROD_MCF'].fillna(final_df['GasFcst_MCF'])
-    
     # Set column order
     col_order = ['PRODUCINGMONTH', 'EOM_Date',
-                 'LIQUIDSPROD_BBL', 'GASPROD_MCF', 'WATERPROD_BBL',
-                 'CumLiquids_BBL', 'CumGas_MCF', 'CumWater_BBL',
-                 'OilFcst_BBL', 'GasFcst_MCF', 'OilFcstCum_BBL', 'GasFcstCum_MCF',
-                 'Oil_Blend', 'Gas_Blend',
-                 'Oil_Decline_Type', 'Gas_Decline_Type']
+                'LIQUIDSPROD_BBL', 'GASPROD_MCF', 'WATERPROD_BBL',
+                'CumLiquids_BBL', 'CumGas_MCF', 'CumWater_BBL',
+                'OilFcst_BBL', 'GasFcst_MCF', 'OilFcstCum_BBL', 'GasFcstCum_MCF',
+                'Oil_Blend', 'Gas_Blend',
+                'Oil_Decline_Type', 'Gas_Decline_Type',
+                'OilFcst_Start_Date', 'GasFcst_Start_Date']
     
     # Ensure all columns exist and add any additional columns at the end
     existing_cols = [col for col in col_order if col in final_df.columns]
@@ -386,59 +661,8 @@ def SingleWellForecast(well_api, econ_input_df, raw_prod_data_df):
     return final_df
 
 #############################################
-# SECTION 4: HELPER FUNCTIONS
+# SECTION 6: MAIN APP INTERFACE
 #############################################
-
-# Function to validate and fix forecast parameters
-def fix_forecast_data_issues(well_row):
-    """Fix common issues with forecast parameters"""
-    fixed_row = well_row.copy()
-    
-    # Fix decline types (ensure they are E or H)
-    if pd.isna(fixed_row['OIL_DECLINE_TYPE']) or fixed_row['OIL_DECLINE_TYPE'] not in ['E', 'H', 'EXP', 'HYP']:
-        fixed_row['OIL_DECLINE_TYPE'] = 'E'  # Default to exponential
-    elif fixed_row['OIL_DECLINE_TYPE'] == 'EXP':
-        fixed_row['OIL_DECLINE_TYPE'] = 'E'
-    elif fixed_row['OIL_DECLINE_TYPE'] == 'HYP':
-        fixed_row['OIL_DECLINE_TYPE'] = 'H'
-    
-    if pd.isna(fixed_row['GAS_DECLINE_TYPE']) or fixed_row['GAS_DECLINE_TYPE'] not in ['E', 'H', 'EXP', 'HYP']:
-        fixed_row['GAS_DECLINE_TYPE'] = 'E'  # Default to exponential
-    elif fixed_row['GAS_DECLINE_TYPE'] == 'EXP':
-        fixed_row['GAS_DECLINE_TYPE'] = 'E'
-    elif fixed_row['GAS_DECLINE_TYPE'] == 'HYP':
-        fixed_row['GAS_DECLINE_TYPE'] = 'H'
-    
-    # Ensure decline rates are valid
-    if pd.isna(fixed_row['OIL_USER_DECLINE']) and pd.isna(fixed_row['OIL_EMPIRICAL_DECLINE']):
-        fixed_row['OIL_EMPIRICAL_DECLINE'] = 0.06  # Default value
-    
-    if pd.isna(fixed_row['GAS_USER_DECLINE']) and pd.isna(fixed_row['GAS_EMPIRICAL_DECLINE']):
-        fixed_row['GAS_EMPIRICAL_DECLINE'] = 0.06  # Default value
-    
-    # Ensure b-factors are valid for hyperbolic decline
-    if fixed_row['OIL_DECLINE_TYPE'] == 'H':
-        if pd.isna(fixed_row['OIL_USER_B_FACTOR']) and pd.isna(fixed_row['OIL_CALC_B_FACTOR']):
-            fixed_row['OIL_CALC_B_FACTOR'] = 1.0  # Default value
-    
-    if fixed_row['GAS_DECLINE_TYPE'] == 'H':
-        if pd.isna(fixed_row['GAS_USER_B_FACTOR']) and pd.isna(fixed_row['GAS_CALC_B_FACTOR']):
-            fixed_row['GAS_CALC_B_FACTOR'] = 1.0  # Default value
-    
-    # Ensure minimum values are valid
-    if pd.isna(fixed_row['OIL_Q_MIN']) or fixed_row['OIL_Q_MIN'] <= 0:
-        fixed_row['OIL_Q_MIN'] = 1.0  # Default value
-    
-    if pd.isna(fixed_row['GAS_Q_MIN']) or fixed_row['GAS_Q_MIN'] <= 0:
-        fixed_row['GAS_Q_MIN'] = 10.0  # Default value
-    
-    if pd.isna(fixed_row['OIL_D_MIN']) or fixed_row['OIL_D_MIN'] <= 0:
-        fixed_row['OIL_D_MIN'] = 0.06  # Default value
-    
-    if pd.isna(fixed_row['GAS_D_MIN']) or fixed_row['GAS_D_MIN'] <= 0:
-        fixed_row['GAS_D_MIN'] = 0.06  # Default value
-    
-    return fixed_row
 
 def generate_forecast(api_uwi, well_data, production_data):
     """Generate forecast for a well"""
@@ -471,124 +695,6 @@ def generate_forecast(api_uwi, well_data, production_data):
         import traceback
         st.code(traceback.format_exc())
         return None
-
-# Function to get the next well in the list
-def get_next_well(current_api, wells_data):
-    """Get the next well from the list (skipping any processed wells)"""
-    if current_api is None or wells_data.empty:
-        return wells_data['API_UWI'].iloc[0] if not wells_data.empty else None
-    
-    # Get active wells (those with FAST_EDIT=1)
-    active_wells = wells_data[wells_data['FAST_EDIT'] == 1]
-    
-    if active_wells.empty:
-        return None
-    
-    # Get the list of active well APIs
-    active_well_apis = active_wells['API_UWI'].tolist()
-    
-    if current_api not in active_well_apis:
-        # If current well is not in the active list, return the first active well
-        return active_well_apis[0] if active_well_apis else None
-    
-    # Find current index in the active wells list
-    current_idx = active_well_apis.index(current_api)
-    
-    # Get next well index, wrapping around to the beginning if needed
-    next_idx = (current_idx + 1) % len(active_well_apis)
-    
-    # Return the next well API
-    return active_well_apis[next_idx]
-
-# Function to refresh the wells data from database
-def refresh_wells_data():
-    """Refresh the wells data from the database"""
-    fresh_data = get_fast_edit_wells()
-    st.session_state['wells_data'] = fresh_data
-    return fresh_data
-
-#############################################
-# SECTION 5: DATABASE CONNECTION FUNCTIONS
-#############################################
-
-@st.cache_resource
-def get_session():
-    """Get the current Snowpark session"""
-    try:
-        session = Session.builder.configs(conn).create()
-        return session
-    except Exception as e:
-        st.error(f"Error getting Snowflake session: {e}")
-        return None
-
-@st.cache_data(ttl=60)
-def get_fast_edit_wells():
-    """Get all wells with FAST_EDIT=1"""
-    try:
-        session = Session.builder.configs(conn).create()
-        
-        # Join ECON_INPUT with vw_well to get well names and trajectory
-        query = """
-        SELECT e.*, w.WELLNAME, w.TRAJECTORY
-        FROM wells.minerals.ECON_INPUT e
-        JOIN wells.minerals.vw_well_input w
-        ON e.API_UWI = w.API_UWI
-        WHERE e.FAST_EDIT = 1
-        ORDER BY w.WELLNAME
-        """
-        result = session.sql(query).to_pandas()
-        return result
-    except Exception as e:
-        st.error(f"Error fetching fast edit wells: {e}")
-        return pd.DataFrame()
-
-@st.cache_data(ttl=600)
-def get_production_data(api_uwi):
-    """Get production data for a well"""
-    try:
-        session = Session.builder.configs(conn).create()
-
-        query = f"""
-        SELECT API_UWI, ProducingMonth, LIQUIDSPROD_BBL, GASPROD_MCF
-        FROM wells.minerals.raw_prod_data
-        WHERE API_UWI = '{api_uwi}'
-        ORDER BY ProducingMonth
-        """
-        
-        result = session.sql(query).to_pandas()
-        return result
-    except Exception as e:
-        st.error(f"Error fetching production data: {e}")
-        return pd.DataFrame()
-
-def update_well_parameters(api_uwi, update_values):
-    """Update well parameters in database"""
-    try:
-        session = Session.builder.configs(conn).create()
-        
-        # Handle NULL values in update statement
-        set_clauses = []
-        for col, value in update_values.items():
-            if value == '' or value is None:
-                set_clauses.append(f"{col} = NULL")
-            else:
-                set_clauses.append(f"{col} = '{value}'")
-        
-        set_clause = ", ".join(set_clauses)
-        
-        sql = f"UPDATE wells.minerals.ECON_INPUT SET {set_clause} WHERE API_UWI = '{api_uwi}'"
-        session.sql(sql).collect()
-        
-        # Clear the cache to force a refresh of the wells data
-        get_fast_edit_wells.clear()
-        
-        return True, "Well updated successfully"
-    except Exception as e:
-        return False, f"Error updating well: {e}"
-
-#############################################
-# SECTION 6: MAIN APP INTERFACE
-#############################################
 
 # Load the data if not already in session state
 if st.session_state['wells_data'] is None:
@@ -773,6 +879,20 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                 # Create a copy of the full forecast for statistics
                 full_forecast_df = forecast_df.copy()
                 
+                # Get forecast start dates for visualization
+                oil_fcst_start_date = None
+                gas_fcst_start_date = None
+                
+                if 'OilFcst_Start_Date' in full_forecast_df.columns:
+                    oil_fcst_start_values = full_forecast_df['OilFcst_Start_Date'].dropna().unique()
+                    if len(oil_fcst_start_values) > 0:
+                        oil_fcst_start_date = pd.to_datetime(oil_fcst_start_values[0])
+                
+                if 'GasFcst_Start_Date' in full_forecast_df.columns:
+                    gas_fcst_start_values = full_forecast_df['GasFcst_Start_Date'].dropna().unique()
+                    if len(gas_fcst_start_values) > 0:
+                        gas_fcst_start_date = pd.to_datetime(gas_fcst_start_values[0])
+                
                 # Limit ONLY PLOT data to 10 years from last production date
                 if 'PRODUCINGMONTH' in forecast_df.columns:
                     max_forecast_date = end_date + pd.DateOffset(years=10)
@@ -857,8 +977,41 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                     alt.FieldOneOfPredicate(field='Production Type', oneOf=['Oil Forecast (BBL)', 'Gas Forecast (MCF)'])
                 ).mark_line(point=True, strokeDash=[6, 2])  # Dashed line for forecast
                 
+                # Create vertical rules for forecast start dates
+                oil_rule = None
+                gas_rule = None
+                
+                if oil_fcst_start_date is not None:
+                    oil_rule = alt.Chart(pd.DataFrame({'date': [oil_fcst_start_date]})).mark_rule(
+                        color='green',
+                        strokeDash=[6, 4],
+                        strokeWidth=1.5
+                    ).encode(
+                        x='date:T',
+                        tooltip=[alt.Tooltip('date:T', title='Oil Forecast Start')]
+                    )
+                
+                if gas_fcst_start_date is not None:
+                    gas_rule = alt.Chart(pd.DataFrame({'date': [gas_fcst_start_date]})).mark_rule(
+                        color='red',
+                        strokeDash=[6, 4],
+                        strokeWidth=1.5
+                    ).encode(
+                        x='date:T',
+                        tooltip=[alt.Tooltip('date:T', title='Gas Forecast Start')]
+                    )
+                
                 # Combine the charts
-                final_chart = (historical_chart + forecast_chart).properties(
+                final_chart = (historical_chart + forecast_chart)
+                
+                # Add vertical rules for forecast start dates if they exist
+                if oil_rule is not None:
+                    final_chart += oil_rule
+                if gas_rule is not None:
+                    final_chart += gas_rule
+                
+                # Set chart properties
+                final_chart = final_chart.properties(
                     title=f"Production History and 10-Year Forecast for {well_name}",
                     height=500  # Make chart taller for better visibility
                 ).interactive()
@@ -881,6 +1034,9 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                         oil_eur = filtered_prod['LIQUIDSPROD_BBL'].sum() + oil_forecast_total
                         st.metric("Forecast Oil (BBL)", f"{oil_forecast_total:,.0f}")
                         st.metric("Oil EUR (BBL)", f"{oil_eur:,.0f}")
+                    
+                    if oil_fcst_start_date is not None:
+                        st.metric("Oil Forecast Start Date", f"{oil_fcst_start_date.strftime('%Y-%m-%d')}")
                 
                 # Gas statistics - USE FULL FORECAST DATA for statistics
                 with stat_col2:
@@ -892,86 +1048,13 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                         gas_eur = filtered_prod['GASPROD_MCF'].sum() + gas_forecast_total
                         st.metric("Forecast Gas (MCF)", f"{gas_forecast_total:,.0f}")
                         st.metric("Gas EUR (MCF)", f"{gas_eur:,.0f}")
+                    
+                    if gas_fcst_start_date is not None:
+                        st.metric("Gas Forecast Start Date", f"{gas_fcst_start_date.strftime('%Y-%m-%d')}")
                 
                 # Add information about forecast periods
                 st.info("The chart displays a 10-year forecast view for better visualization, while the statistics include the full economic forecast to Qmin.")
                 
-                # Add option to toggle between 10-year view and full forecast view
-                if st.checkbox("Show full economic forecast in chart", value=False):
-                    st.markdown('<div class="section-header">Full Economic Forecast View</div>', unsafe_allow_html=True)
-                    
-                    # Create a new chart with the full forecast data
-                    full_forecast_chart = pd.DataFrame()
-                    if 'PRODUCINGMONTH' in full_forecast_df.columns:
-                        full_forecast_chart['Production Month'] = full_forecast_df['PRODUCINGMONTH']
-                        if 'OilFcst_BBL' in full_forecast_df.columns:
-                            full_forecast_chart['Oil Forecast (BBL)'] = full_forecast_df['OilFcst_BBL']
-                        if 'GasFcst_MCF' in full_forecast_df.columns:
-                            full_forecast_chart['Gas Forecast (MCF)'] = full_forecast_df['GasFcst_MCF']
-                    
-                    # Melt forecast data for full chart
-                    full_melted_hist = chart_data.melt(
-                        id_vars=['Production Month'],
-                        value_vars=['Oil (BBL)', 'Gas (MCF)'],
-                        var_name='Production Type',
-                        value_name='Volume'
-                    )
-                    
-                    # Melt full forecast data
-                    if not full_forecast_chart.empty:
-                        full_forecast_vars = []
-                        if 'Oil Forecast (BBL)' in full_forecast_chart.columns:
-                            full_forecast_vars.append('Oil Forecast (BBL)')
-                        if 'Gas Forecast (MCF)' in full_forecast_chart.columns:
-                            full_forecast_vars.append('Gas Forecast (MCF)')
-                        
-                        if full_forecast_vars:
-                            full_melted_forecast = full_forecast_chart.melt(
-                                id_vars=['Production Month'],
-                                value_vars=full_forecast_vars,
-                                var_name='Production Type',
-                                value_name='Volume'
-                            )
-                            
-                            # Combine historical and full forecast data
-                            full_melted_data = pd.concat([full_melted_hist, full_melted_forecast], ignore_index=True)
-                        else:
-                            full_melted_data = full_melted_hist
-                    else:
-                        full_melted_data = full_melted_hist
-                    
-                    # Filter out zero values for log scale
-                    full_melted_data = full_melted_data[full_melted_data['Volume'] > 0]
-                    
-                    # Create full chart
-                    full_chart = alt.Chart(full_melted_data).encode(
-                        x=alt.X('Production Month:T', title='Production Month'),
-                        y=alt.Y('Volume:Q', scale=alt.Scale(type='log'), title='Production Volume (Log Scale)'),
-                        color=alt.Color('Production Type:N', 
-                                        scale=alt.Scale(domain=list(color_mapping.keys()), 
-                                                        range=list(color_mapping.values())),
-                                        legend=alt.Legend(title='Production Type')),
-                        tooltip=['Production Month', 'Production Type', 'Volume']
-                    )
-                    
-                    # Create separate line marks for historical data (solid) and forecast data (dashed)
-                    full_historical_chart = full_chart.transform_filter(
-                        alt.FieldOneOfPredicate(field='Production Type', oneOf=['Oil (BBL)', 'Gas (MCF)'])
-                    ).mark_line(point=True)
-                    
-                    full_forecast_chart = full_chart.transform_filter(
-                        alt.FieldOneOfPredicate(field='Production Type', oneOf=['Oil Forecast (BBL)', 'Gas Forecast (MCF)'])
-                    ).mark_line(point=True, strokeDash=[6, 2])  # Dashed line for forecast
-                    
-                    # Combine the charts
-                    full_final_chart = (full_historical_chart + full_forecast_chart).properties(
-                        title=f"Production History and Full Economic Forecast for {well_name}",
-                        height=500  # Make chart taller for better visibility
-                    ).interactive()
-                    
-                    # Display the full chart
-                    st.altair_chart(full_final_chart, use_container_width=True)
-                    
             else:
                 if production_data.empty:
                     st.warning(f"No production data available for {well_name} ({api_uwi})")
@@ -1003,6 +1086,12 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                 temp_well_row['GAS_USER_QI'] = st.session_state.gas_qi
                 temp_well_row['GAS_USER_DECLINE'] = st.session_state.gas_decline
                 temp_well_row['GAS_USER_B_FACTOR'] = st.session_state.gas_b_factor
+                
+                # Update forecast start dates
+                if 'oil_fcst_start' in st.session_state:
+                    temp_well_row['FCST_START_OIL'] = st.session_state.oil_fcst_start
+                if 'gas_fcst_start' in st.session_state:
+                    temp_well_row['FCST_START_GAS'] = st.session_state.gas_fcst_start
                 
                 # Create a temporary dataframe with just this well's data
                 temp_data = pd.DataFrame([temp_well_row])
@@ -1038,10 +1127,18 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
             # Oil parameters section
             st.markdown('<div class="section-header">Oil Parameters</div>', unsafe_allow_html=True)
             
-            # Get current values
+            # Get current values for oil parameters
             oil_qi = well_row['OIL_USER_QI'] if not pd.isna(well_row['OIL_USER_QI']) else well_row['OIL_CALC_QI']
             oil_decline = well_row['OIL_USER_DECLINE'] if not pd.isna(well_row['OIL_USER_DECLINE']) else well_row['OIL_EMPIRICAL_DECLINE']
             oil_b_factor = well_row['OIL_USER_B_FACTOR'] if not pd.isna(well_row['OIL_USER_B_FACTOR']) else well_row['OIL_CALC_B_FACTOR']
+            
+            # Get oil forecast start date
+            oil_fcst_start = well_row['FCST_START_OIL'] if 'FCST_START_OIL' in well_row and pd.notna(well_row['FCST_START_OIL']) else None
+            if oil_fcst_start is not None:
+                try:
+                    oil_fcst_start = pd.to_datetime(oil_fcst_start)
+                except:
+                    oil_fcst_start = None
             
             # Initialize session state for oil parameters if needed
             if 'oil_qi' not in st.session_state:
@@ -1050,6 +1147,10 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                 st.session_state.oil_decline = float(oil_decline) if not pd.isna(oil_decline) else 0.06
             if 'oil_b_factor' not in st.session_state:
                 st.session_state.oil_b_factor = float(oil_b_factor) if not pd.isna(oil_b_factor) else 1.0
+            
+            # Get last production dates for default forecast start dates
+            last_oil_date, last_gas_date = get_last_production_dates(api_uwi, production_data)
+            default_oil_fcst_start = last_oil_date + pd.DateOffset(months=1) if last_oil_date is not None else pd.Timestamp.now()
             
             # Oil parameters with keyboard arrow adjustment by 1 unit
             st.number_input("Oil User Qi", 
@@ -1073,15 +1174,35 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                         step=0.1,  # Step size for b-factor
                         on_change=update_forecast)
             
+            # Add oil forecast start date picker
+            oil_fcst_start_date = st.date_input(
+                "Oil Forecast Start Date",
+                value=oil_fcst_start if oil_fcst_start is not None else default_oil_fcst_start,
+                key="oil_fcst_start",
+                help="Date to start oil forecast (first day of selected month)",
+                on_change=update_forecast
+            )
+            
             st.markdown("---")
             
             # Gas parameters section
             st.markdown('<div class="section-header">Gas Parameters</div>', unsafe_allow_html=True)
             
-            # Get current values
+            # Get current values for gas parameters
             gas_qi = well_row['GAS_USER_QI'] if not pd.isna(well_row['GAS_USER_QI']) else well_row['GAS_CALC_QI'] 
             gas_decline = well_row['GAS_USER_DECLINE'] if not pd.isna(well_row['GAS_USER_DECLINE']) else well_row['GAS_EMPIRICAL_DECLINE']
             gas_b_factor = well_row['GAS_USER_B_FACTOR'] if not pd.isna(well_row['GAS_USER_B_FACTOR']) else well_row['GAS_CALC_B_FACTOR']
+            
+            # Get gas forecast start date
+            gas_fcst_start = well_row['FCST_START_GAS'] if 'FCST_START_GAS' in well_row and pd.notna(well_row['FCST_START_GAS']) else None
+            if gas_fcst_start is not None:
+                try:
+                    gas_fcst_start = pd.to_datetime(gas_fcst_start)
+                except:
+                    gas_fcst_start = None
+            
+            # Default gas forecast start date if needed
+            default_gas_fcst_start = last_gas_date + pd.DateOffset(months=1) if last_gas_date is not None else pd.Timestamp.now()
             
             # Initialize session state for gas parameters if needed
             if 'gas_qi' not in st.session_state:
@@ -1113,6 +1234,15 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                         step=0.1,  # Step size for b-factor
                         on_change=update_forecast)
             
+            # Add gas forecast start date picker
+            gas_fcst_start_date = st.date_input(
+                "Gas Forecast Start Date",
+                value=gas_fcst_start if gas_fcst_start is not None else default_gas_fcst_start,
+                key="gas_fcst_start",
+                help="Date to start gas forecast (first day of selected month)",
+                on_change=update_forecast
+            )
+            
             st.markdown("---")
             
             # Save buttons in separate form
@@ -1136,7 +1266,9 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                         'OIL_USER_B_FACTOR': st.session_state.oil_b_factor,
                         'GAS_USER_QI': st.session_state.gas_qi,
                         'GAS_USER_DECLINE': st.session_state.gas_decline,
-                        'GAS_USER_B_FACTOR': st.session_state.gas_b_factor
+                        'GAS_USER_B_FACTOR': st.session_state.gas_b_factor,
+                        'FCST_START_OIL': st.session_state.oil_fcst_start.strftime('%Y-%m-%d'),
+                        'FCST_START_GAS': st.session_state.gas_fcst_start.strftime('%Y-%m-%d')
                     }
                     
                     # Add FAST_EDIT=0 if removing from fast edit
@@ -1156,13 +1288,14 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                         
                         # Refresh the wells data
                         fresh_wells_data = refresh_wells_data()
-                        
                         # Get the next well API
-                        next_well = get_next_well(api_uwi, fresh_wells_data)
-                        
+                        next_well = get_next_well(api_uwi, wells_data)
+
                         # Move to next well
                         if next_well:
+                            st.write('next well present')
                             st.session_state['selected_well'] = next_well
+                            st.write(st.session_state['selected_well'])
                             # Force page refresh
                             st.rerun()
                         else:
@@ -1180,6 +1313,12 @@ if 'selected_well' in st.session_state and st.session_state['selected_well']:
                 if 'PRODUCINGMONTH' in production_data.columns:
                     last_prod_date = production_data['PRODUCINGMONTH'].max()
                     st.write(f"**Last Production:** {pd.to_datetime(last_prod_date).strftime('%Y-%m-%d')}")
+                
+                # Show last production dates by product
+                if last_oil_date is not None:
+                    st.write(f"**Last Oil Production:** {last_oil_date.strftime('%Y-%m-%d')}")
+                if last_gas_date is not None:
+                    st.write(f"**Last Gas Production:** {last_gas_date.strftime('%Y-%m-%d')}")
 else:
     st.info("Please select a well from the sidebar to begin editing.")
 
@@ -1189,4 +1328,4 @@ else:
 
 # Add a footer
 st.markdown("---")
-st.caption("Fast Edit Well Application - Streamlined interface for rapid well parameter updates with keyboard arrow controls")
+st.caption("Fast Edit Well Application - Streamlined interface for rapid well parameter updates with custom forecast start dates")

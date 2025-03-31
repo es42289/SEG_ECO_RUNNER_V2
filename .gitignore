@@ -1,6 +1,2 @@
-# ignore ALL .log files
-*.log
-
-# ignore ALL files in ANY directory named temp
 archive/
-functionality_examples/joystick_graph/env
+*dev*
