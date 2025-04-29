@@ -13,10 +13,7 @@ from snowflake.snowpark import Session
 import io
 import base64
 import requests
-from bs4 import BeautifulSoup
-## delete below
-import snowflake.connector
-from snowflake.snowpark.session import Session
+from html.parser import HTMLParser
 
 # Configure page
 st.set_page_config(
@@ -64,15 +61,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def get_snowflake_session():
-    connection_parameters = {'user':"ELII",
-        'password':"Elii123456789!",
-        'account':"CMZNSCB-MU47932",
-        'warehouse':"COMPUTE_WH",
-        'database':"WELLS",
-        'schema':"MINERALS"}
-    return Session.builder.configs(connection_parameters).create()
-
+# Initialize connection to Snowflake
+try:
+    # For Snowflake Streamlit apps
+    from snowflake.snowpark.context import get_active_session
+    session = get_active_session()
+    st.success("Connected to Snowflake!")
+except Exception as e:
+    st.error(f"Error connecting to Snowflake: {str(e)}")
+    st.stop()
+    
 # Function to create a downloadable link for dataframes
 def get_csv_download_link(df, filename="data.csv", link_text="Download CSV"):
     csv = df.to_csv(index=False)
@@ -113,7 +111,6 @@ def get_well_data():
    JOIN 
        VW_WELL_INPUT w ON e.API_UWI = w.API_UWI
    """
-   session = get_snowflake_session()
    return session.sql(query).to_pandas()
 
 @st.cache_data(ttl=3600)
@@ -131,7 +128,6 @@ def get_production_history():
    FROM 
        VW_PROD_INPUT
    """
-   session = get_snowflake_session()
    return session.sql(query).to_pandas()
 
 @st.cache_data(ttl=3600)
@@ -165,7 +161,7 @@ def get_economic_scenarios():
    FROM 
        ECON_SCENARIOS
    """
-   session = get_snowflake_session()
+   
    return session.sql(query).to_pandas()
 
 @st.cache_data(ttl=3600)
@@ -181,59 +177,93 @@ def get_price_deck():
    FROM 
        PRICE_DECK
    """
-   session = get_snowflake_session()
+   
    return session.sql(query).to_pandas()
 
+class TableParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_table = False
+        self.in_row = False
+        self.in_cell = False
+        self.headers = []
+        self.rows = []
+        self.current_row = []
+        self.current_cell = ''
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'table':
+            self.in_table = True
+        elif tag == 'tr' and self.in_table:
+            self.in_row = True
+            self.current_row = []
+        elif tag in ('td', 'th') and self.in_row:
+            self.in_cell = True
+            self.current_cell = ''
+
+    def handle_endtag(self, tag):
+        if tag == 'table':
+            self.in_table = False
+        elif tag == 'tr' and self.in_table:
+            if self.current_row:
+                if not self.headers:
+                    self.headers = self.current_row
+                else:
+                    self.rows.append(self.current_row)
+            self.in_row = False
+        elif tag in ('td', 'th') and self.in_row:
+            self.in_cell = False
+            self.current_row.append(self.current_cell.strip())
+
+    def handle_data(self, data):
+        if self.in_cell:
+            self.current_cell += data
+            
 @st.cache_data()
 def get_live_strip(url):
     # Set headers to mimic a browser visit
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/113.0.0.0 Safari/537.36"
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/113.0.0.0 Safari/537.36"
     }
     # Send a GET request to the URL
     response = requests.get(url, headers=headers)
+
     # Check if the request was successful
     if response.status_code == 200:
-        # Parse the HTML content using BeautifulSoup
-        soup = BeautifulSoup(response.text, 'html.parser')
-        # Find the table containing the futures data
-        table = soup.find('table')
-        # Check if the table was found
-        if table:
-            # Extract table headers
-            headers = [header.text.strip() for header in table.find_all('th')]
-            # Extract table rows
-            rows = []
-            for row in table.find_all('tr')[1:]:  # Skip header row
-                cells = row.find_all('td')
-                if len(cells) == len(headers):
-                    row_data = [cell.text.strip() for cell in cells]
-                    rows.append(row_data)
-            # Create a DataFrame from the extracted data
-            df = pd.DataFrame(rows, columns=headers)
+        parser = TableParser()
+        parser.feed(response.text)
+
+        # Build DataFrame
+        if parser.headers and parser.rows:
+            df = pd.DataFrame(parser.rows, columns=parser.headers)
+
             if 'Crude' in df.iloc[0]['Settlement Date']:
                 commodity = 'OIL'
             else:
                 commodity = 'GAS'
+
             df['Settlement Date'] = df['Settlement Date'].str.replace('Crude Oil ', '').str.replace('Natural Gas ', '')
             df['Settlement Date'] = pd.to_datetime(["1 " + d for d in df['Settlement Date']], format="%d %b %y")
             df['Settlement Date'] = (df['Settlement Date'] - pd.Timedelta(days=1))
-            df['Price'] = df['Price'].astype('float')
+            df['Price'] = df['Price'].str.replace(',', '').astype('float')
             df.sort_values(by='Settlement Date', ascending=True, inplace=True)
             df = df.set_index('Settlement Date')
             df['Price'] = df['Price'].interpolate(method='linear')
-            df = df.reset_index().rename(columns={'index': 'Settlement Date'}).drop(columns=['Change','Change %']).rename(columns = {'Settlement Date':'MONTH_DATE',
-                                                                                                                                      'Price':f'{commodity}',
-                                                                                                                                      'Contract Name':'PRICE_DECK_NAME'})
+            df = df.reset_index().rename(columns={'index': 'Settlement Date'}).drop(columns=['Change', 'Change %']).rename(
+                columns={'Settlement Date': 'MONTH_DATE',
+                         'Price': f'{commodity}',
+                         'Contract Name': 'PRICE_DECK_NAME'})
+            return df
         else:
             print("Futures data table not found on the page.")
-    return df
+
+    return pd.DataFrame()  # In case of error, return empty df
 
 @st.cache_data(ttl=3600)
 def get_blended_price_deck(active_price_deck_name):
-    session = get_snowflake_session()
+    
     hist_query = """
         SELECT 
             MONTH_DATE, 
@@ -471,7 +501,7 @@ def calculate_hyperbolic_decline(qi, b_factor, initial_decline, terminal_decline
 # =============================================================================
 
 def save_forecast_results(forecast_df, run_info):
-    session = get_snowflake_session()
+    
     """Save forecast summary results to ECON_RESULTS table"""
     if not session:
         st.warning("Not connected to Snowflake - results not saved")
@@ -542,7 +572,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["Single Well Forecast", "Multi-Well Analysis",
 # =============================================================================
 # SECTION 5A: SINGLE WELL FORECAST - INPUTS
 # =============================================================================
-session = get_snowflake_session()
+
 with tab1:
     st.markdown('<p class="sub-header">Single Well Forecast</p>', unsafe_allow_html=True)
     
