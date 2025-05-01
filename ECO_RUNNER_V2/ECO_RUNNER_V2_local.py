@@ -13,7 +13,7 @@ from snowflake.snowpark import Session
 import io
 import base64
 import requests
-# from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup
 from html.parser import HTMLParser
 ## delete below
 import snowflake.connector
@@ -185,132 +185,134 @@ def get_price_deck():
    session = get_snowflake_session()
    return session.sql(query).to_pandas()
 
-class TableParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.in_table = False
-        self.in_row = False
-        self.in_cell = False
-        self.headers = []
-        self.rows = []
-        self.current_row = []
-        self.current_cell = ''
+# ## html parser for gathering strip prices
+# class TableParser(HTMLParser):
+#     def __init__(self):
+#         super().__init__()
+#         self.in_table = False
+#         self.in_row = False
+#         self.in_cell = False
+#         self.headers = []
+#         self.rows = []
+#         self.current_row = []
+#         self.current_cell = ''
 
-    def handle_starttag(self, tag, attrs):
-        if tag == 'table':
-            self.in_table = True
-        elif tag == 'tr' and self.in_table:
-            self.in_row = True
-            self.current_row = []
-        elif tag in ('td', 'th') and self.in_row:
-            self.in_cell = True
-            self.current_cell = ''
+#     def handle_starttag(self, tag, attrs):
+#         if tag == 'table':
+#             self.in_table = True
+#         elif tag == 'tr' and self.in_table:
+#             self.in_row = True
+#             self.current_row = []
+#         elif tag in ('td', 'th') and self.in_row:
+#             self.in_cell = True
+#             self.current_cell = ''
 
-    def handle_endtag(self, tag):
-        if tag == 'table':
-            self.in_table = False
-        elif tag == 'tr' and self.in_table:
-            if self.current_row:
-                if not self.headers:
-                    self.headers = self.current_row
-                else:
-                    self.rows.append(self.current_row)
-            self.in_row = False
-        elif tag in ('td', 'th') and self.in_row:
-            self.in_cell = False
-            self.current_row.append(self.current_cell.strip())
+#     def handle_endtag(self, tag):
+#         if tag == 'table':
+#             self.in_table = False
+#         elif tag == 'tr' and self.in_table:
+#             if self.current_row:
+#                 if not self.headers:
+#                     self.headers = self.current_row
+#                 else:
+#                     self.rows.append(self.current_row)
+#             self.in_row = False
+#         elif tag in ('td', 'th') and self.in_row:
+#             self.in_cell = False
+#             self.current_row.append(self.current_cell.strip())
 
-    def handle_data(self, data):
-        if self.in_cell:
-            self.current_cell += data
+#     def handle_data(self, data):
+#         if self.in_cell:
+#             self.current_cell += data
             
-@st.cache_data()
+# @st.cache_data()
+# def get_live_strip(url):
+    # Set headers to mimic a browser visit
+    # headers = {
+    #     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    #                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+    #                   "Chrome/113.0.0.0 Safari/537.36"
+    # }
+    # # Send a GET request to the URL
+    # response = requests.get(url, headers=headers)
+
+    # # Check if the request was successful
+    # if response.status_code == 200:
+    #     parser = TableParser()
+    #     parser.feed(response.text)
+
+    #     # Build DataFrame
+    #     if parser.headers and parser.rows:
+    #         df = pd.DataFrame(parser.rows, columns=parser.headers)
+
+    #         if 'Crude' in df.iloc[0]['Settlement Date']:
+    #             commodity = 'OIL'
+    #         else:
+    #             commodity = 'GAS'
+
+    #         df['Settlement Date'] = df['Settlement Date'].str.replace('Crude Oil ', '').str.replace('Natural Gas ', '')
+    #         df['Settlement Date'] = pd.to_datetime(["1 " + d for d in df['Settlement Date']], format="%d %b %y")
+    #         df['Settlement Date'] = (df['Settlement Date'] - pd.Timedelta(days=1))
+    #         df['Price'] = df['Price'].str.replace(',', '').astype('float')
+    #         df.sort_values(by='Settlement Date', ascending=True, inplace=True)
+    #         df = df.set_index('Settlement Date')
+    #         df['Price'] = df['Price'].interpolate(method='linear')
+    #         df = df.reset_index().rename(columns={'index': 'Settlement Date'}).drop(columns=['Change', 'Change %']).rename(
+    #             columns={'Settlement Date': 'MONTH_DATE',
+    #                      'Price': f'{commodity}',
+    #                      'Contract Name': 'PRICE_DECK_NAME'})
+    #         return df
+    #     else:
+    #         print("Futures data table not found on the page.")
+
+    # return pd.DataFrame()  # In case of error, return empty df
+
+
 def get_live_strip(url):
     # Set headers to mimic a browser visit
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/113.0.0.0 Safari/537.36"
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/113.0.0.0 Safari/537.36"
     }
     # Send a GET request to the URL
     response = requests.get(url, headers=headers)
-
     # Check if the request was successful
     if response.status_code == 200:
-        parser = TableParser()
-        parser.feed(response.text)
-
-        # Build DataFrame
-        if parser.headers and parser.rows:
-            df = pd.DataFrame(parser.rows, columns=parser.headers)
-
+        # Parse the HTML content using BeautifulSoup
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # Find the table containing the futures data
+        table = soup.find('table')
+        # Check if the table was found
+        if table:
+            # Extract table headers
+            headers = [header.text.strip() for header in table.find_all('th')]
+            # Extract table rows
+            rows = []
+            for row in table.find_all('tr')[1:]:  # Skip header row
+                cells = row.find_all('td')
+                if len(cells) == len(headers):
+                    row_data = [cell.text.strip() for cell in cells]
+                    rows.append(row_data)
+            # Create a DataFrame from the extracted data
+            df = pd.DataFrame(rows, columns=headers)
             if 'Crude' in df.iloc[0]['Settlement Date']:
                 commodity = 'OIL'
             else:
                 commodity = 'GAS'
-
             df['Settlement Date'] = df['Settlement Date'].str.replace('Crude Oil ', '').str.replace('Natural Gas ', '')
             df['Settlement Date'] = pd.to_datetime(["1 " + d for d in df['Settlement Date']], format="%d %b %y")
             df['Settlement Date'] = (df['Settlement Date'] - pd.Timedelta(days=1))
-            df['Price'] = df['Price'].str.replace(',', '').astype('float')
+            df['Price'] = df['Price'].astype('float')
             df.sort_values(by='Settlement Date', ascending=True, inplace=True)
             df = df.set_index('Settlement Date')
             df['Price'] = df['Price'].interpolate(method='linear')
-            df = df.reset_index().rename(columns={'index': 'Settlement Date'}).drop(columns=['Change', 'Change %']).rename(
-                columns={'Settlement Date': 'MONTH_DATE',
-                         'Price': f'{commodity}',
-                         'Contract Name': 'PRICE_DECK_NAME'})
-            return df
+            df = df.reset_index().rename(columns={'index': 'Settlement Date'}).drop(columns=['Change','Change %']).rename(columns = {'Settlement Date':'MONTH_DATE',
+                                                                                                                                      'Price':f'{commodity}',
+                                                                                                                                      'Contract Name':'PRICE_DECK_NAME'})
         else:
             print("Futures data table not found on the page.")
-
-    return pd.DataFrame()  # In case of error, return empty df
-
-# def get_live_strip(url):
-#     # Set headers to mimic a browser visit
-#     headers = {
-#         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-#                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-#                     "Chrome/113.0.0.0 Safari/537.36"
-#     }
-#     # Send a GET request to the URL
-#     response = requests.get(url, headers=headers)
-#     # Check if the request was successful
-#     if response.status_code == 200:
-#         # Parse the HTML content using BeautifulSoup
-#         soup = BeautifulSoup(response.text, 'html.parser')
-#         # Find the table containing the futures data
-#         table = soup.find('table')
-#         # Check if the table was found
-#         if table:
-#             # Extract table headers
-#             headers = [header.text.strip() for header in table.find_all('th')]
-#             # Extract table rows
-#             rows = []
-#             for row in table.find_all('tr')[1:]:  # Skip header row
-#                 cells = row.find_all('td')
-#                 if len(cells) == len(headers):
-#                     row_data = [cell.text.strip() for cell in cells]
-#                     rows.append(row_data)
-#             # Create a DataFrame from the extracted data
-#             df = pd.DataFrame(rows, columns=headers)
-#             if 'Crude' in df.iloc[0]['Settlement Date']:
-#                 commodity = 'OIL'
-#             else:
-#                 commodity = 'GAS'
-#             df['Settlement Date'] = df['Settlement Date'].str.replace('Crude Oil ', '').str.replace('Natural Gas ', '')
-#             df['Settlement Date'] = pd.to_datetime(["1 " + d for d in df['Settlement Date']], format="%d %b %y")
-#             df['Settlement Date'] = (df['Settlement Date'] - pd.Timedelta(days=1))
-#             df['Price'] = df['Price'].astype('float')
-#             df.sort_values(by='Settlement Date', ascending=True, inplace=True)
-#             df = df.set_index('Settlement Date')
-#             df['Price'] = df['Price'].interpolate(method='linear')
-#             df = df.reset_index().rename(columns={'index': 'Settlement Date'}).drop(columns=['Change','Change %']).rename(columns = {'Settlement Date':'MONTH_DATE',
-#                                                                                                                                       'Price':f'{commodity}',
-#                                                                                                                                       'Contract Name':'PRICE_DECK_NAME'})
-#         else:
-#             print("Futures data table not found on the page.")
-#     return df
+    return df
 
 @st.cache_data(ttl=3600)
 def get_blended_price_deck(active_price_deck_name):
@@ -570,23 +572,26 @@ def save_forecast_results(forecast_df, run_info):
 
         # Create summary data for ECON_RESULTS table - updated column names to match schema
         summary_data = {
-            'ECORUN_DATE': datetime.now(),
+            'API_UWI': run_info['api'],
+            'ECORUN_USER': 'ECO_RUNNER_main',
             'ECORUN_DEAL': run_info['deal'],
             'ECORUN_ID': run_info['id'],
+            'ECORUN_DATE': datetime.now(),
             'ECORUN_SCENARIO': run_info['scenario'],
-            'PRICE_DECK_NAME': run_info['price_deck'],  # Changed from PRICE_DECK to PRICE_DECK_NAME
-            'API_UWI': run_info['api'],
             'TOTAL_OIL_BLEND': forecast_df['Oil_Blend'].sum().round(2),  # Total from all production
             'TOTAL_GAS_BLEND': forecast_df['Gas_Blend'].sum().round(2),  # Total from all production
-            'TOTAL_NGL_BLEND': forecast_df['NGL'].sum().round(2),        # Total from all production
-            'TOTAL_REVENUE': forecast_df['Gross Revenue'].sum().round(2),  # Total from all production
+            'AVG_OILPRICE': forecast_df[forecast_df['Date']>=pd.to_datetime(effective_date)]['OIL'].mean(),
+            'AVG_GASPRICE': forecast_df[forecast_df['Date']>=pd.to_datetime(effective_date)]['GAS'].mean(),
+            'AVG_NGLPRICE': forecast_df[forecast_df['Date']>=pd.to_datetime(effective_date)]['NGL'].mean(),
+            'PRICE_DECK_NAME': run_info['price_deck'],  # Changed from PRICE_DECK to PRICE_DECK_NAME
+            'TOTAL_REVENUE': forecast_df['Gross Revenue'].sum().round(2),  # Total from all production    
             'TOTAL_GPT': forecast_df['GPT'].sum().round(2),              # Total from all production
             'TOTAL_SEVTAX': forecast_df['Sev Tax'].sum().round(2),       # Total from all production
             'TOTAL_ADVALTAX': forecast_df['AdVal Tax'].sum().round(2),   # Total from all production
+            'PV0': future_cashflows['Net Cash Flow'].sum().round(2),  # Only future cash flows from effective date
+            'TOTAL_NGL_BLEND': forecast_df['NGL'].sum().round(2),        # Total from all production
             'TOTAL_NET_CASH_FLOW': forecast_df['Net Cash Flow'].sum().round(2),  # Total from all production
-            'PV0': future_cashflows['Net Cash Flow'].sum().round(2)  # Only future cash flows from effective date
         }
-        
         # Calculate PV values for specified discount rates using only future cash flows
         pv_rates = [8, 10, 12, 14, 16, 18, 20, 22, 24]
         for rate in pv_rates:
@@ -596,7 +601,13 @@ def save_forecast_results(forecast_df, run_info):
         
         # Convert to DataFrame
         summary_df = pd.DataFrame([summary_data])
-        
+        ## reorder to fit db table
+        summary_df = summary_df[['API_UWI', 'ECORUN_USER', 'ECORUN_DEAL', 'ECORUN_ID', 'ECORUN_DATE',
+       'ECORUN_SCENARIO', 'TOTAL_OIL_BLEND', 'TOTAL_GAS_BLEND', 'AVG_OILPRICE',
+       'AVG_GASPRICE', 'AVG_NGLPRICE', 'TOTAL_REVENUE', 'TOTAL_GPT',
+       'TOTAL_SEVTAX', 'TOTAL_ADVALTAX', 'PV0', 'PV8', 'PV10', 'PV12', 'PV14',
+       'PV16', 'PV18', 'PV20', 'PV22', 'PV24', 'TOTAL_NGL_BLEND',
+       'TOTAL_NET_CASH_FLOW', 'PRICE_DECK_NAME']]
         # Save to Snowflake
         session.create_dataframe(summary_df).write.mode("append").save_as_table("ECON_RESULTS")
         
@@ -655,6 +666,8 @@ with tab1:
             price_deck_options.append('Live Strip')
         else:
             price_deck_options = ["Base Deck", "High Deck", "Low Deck"]
+        price_deck_options.sort()
+        price_deck_options.remove('HIST')
         price_deck = st.selectbox("Price Deck", price_deck_options)
     
     # Well selection or manual parameter entry
@@ -828,8 +841,12 @@ with tab1:
 
     # Forecast button
     if st.button("Generate Forecast", key="forecast_btn"):
+        prod_history = get_production_history()
+        well_history = prod_history[prod_history['API_UWI'] == selected_api].copy()
+        well_history['PRODUCINGMONTH'] = pd.to_datetime(well_history['PRODUCINGMONTH'])
         # Create date range
-        date_range = pd.date_range(start=effective_date, periods=max_fcst_months, freq='M')
+        # date_range = pd.date_range(start=effective_date, periods=max_fcst_months, freq='M') ##delete
+        date_range = pd.date_range(start=well_history['PRODUCINGMONTH'].max(), periods=max_fcst_months, freq='M')
         
         # Calculate oil forecast
         if oil_decline_type == "H":
@@ -974,13 +991,13 @@ with tab1:
         
         # Blend with historical data if well is selected from database
         if param_source == "Select Existing Well":
-            # Load production history
-            prod_history = get_production_history()
-            well_history = prod_history[prod_history['API_UWI'] == selected_api].copy()
+            # # Load production history
+            # prod_history = get_production_history()
+            # well_history = prod_history[prod_history['API_UWI'] == selected_api].copy()##delete
             
             if not well_history.empty:
                 # Process historical data
-                well_history['PRODUCINGMONTH'] = pd.to_datetime(well_history['PRODUCINGMONTH'])
+                # well_history['PRODUCINGMONTH'] = pd.to_datetime(well_history['PRODUCINGMONTH'])##delete
                 well_history = well_history.sort_values('PRODUCINGMONTH')
                 well_history['Date'] = well_history['PRODUCINGMONTH'].apply(lambda x: x + pd.offsets.MonthEnd(0))
                 
@@ -1136,7 +1153,11 @@ with tab1:
                 
                 # 4. Now combine all three parts
                 # Make sure forecast doesn't include gap period
+
                 fcst_after_effective = fcst_df[fcst_df['Date'] > effective_date_pd].copy()
+                ##make sure forecast go backwards - elii
+                # fcst_after_effective = fcst_df[fcst_df['Date'] > hist_df['Date'].max()].copy()
+
                 fcst_after_effective['Data_Source'] = 'Forecast'
                 # Combine all dataframes
                 combined_parts = [hist_df]
@@ -1403,7 +1424,7 @@ with tab1:
             # If using blended view, we need to include all historical data plus the selected number of forecast months
             if 'Data_Source' in blended_df.columns:
                 historical_data = blended_df[blended_df['Data_Source'] == 'Historical']
-                forecast_data = blended_df[blended_df['Data_Source'] == 'Forecast']
+                forecast_data = blended_df[blended_df['Data_Source'] != 'Historical']
                 
                 if not historical_data.empty and not forecast_data.empty:
                     # Include all historical data plus selected forecast months
@@ -1420,11 +1441,10 @@ with tab1:
             
         # Create production plots with color-coded historical vs forecast data
         fig1 = go.Figure()
-        
         # Split data into historical and forecast parts for color coding if using blended view
         if use_blended_view and 'Data_Source' in plot_data.columns:
             historical_data = plot_data[plot_data['Data_Source'] == 'Historical']
-            forecast_data = plot_data[plot_data['Data_Source'] == 'Forecast']
+            forecast_data = blended_df[blended_df['Data_Source'] != 'Historical']
             
             # Get last historical date for transition line
             if not historical_data.empty:
@@ -1937,195 +1957,198 @@ with tab1:
 
 # Add download options
 st.markdown("### Export Forecast Data")
-st.markdown(get_csv_download_link(forecast_df, f"{selected_api}_forecast.csv", "Download Forecast CSV"), unsafe_allow_html=True)
+try:
+    st.markdown(get_csv_download_link(forecast_df, f"{selected_api}_forecast.csv", "Download Forecast CSV"), unsafe_allow_html=True)
 
-# Add option to download blended data if available
-if use_blended_view and 'Data_Source' in blended_df.columns and any(blended_df['Data_Source'] == 'Historical'):
-    st.markdown(get_csv_download_link(blended_df, f"{selected_api}_blended.csv", "Download Blended Data CSV"), unsafe_allow_html=True)
-
-# Option to download cash flow data specifically
-if 'Net Cash Flow' in forecast_df.columns:
-    cash_flow_df = forecast_df[['Date', 'Oil_Blend', 'Gas_Blend', 'Gross Revenue', 'Net Cash Flow', 'Cum_NCF']]
-    st.markdown(get_csv_download_link(cash_flow_df, f"{selected_api}_cash_flow.csv", "Download Cash Flow CSV"), unsafe_allow_html=True)
-    
-    # Add option to download blended cash flow data if available
+    # Add option to download blended data if available
     if use_blended_view and 'Data_Source' in blended_df.columns and any(blended_df['Data_Source'] == 'Historical'):
-        blended_cash_flow = blended_df[['Date', 'Data_Source', 'Oil_Blend', 'Gas_Blend', 'Gross Revenue', 'Net Cash Flow', 'Cum_NCF']]
-        st.markdown(get_csv_download_link(blended_cash_flow, f"{selected_api}_blended_cash_flow.csv", "Download Blended Cash Flow CSV"), unsafe_allow_html=True)
+        st.markdown(get_csv_download_link(blended_df, f"{selected_api}_blended.csv", "Download Blended Data CSV"), unsafe_allow_html=True)
 
-# Option to save monthly forecast to Snowflake
-if st.checkbox("Save Monthly Forecast to Snowflake", value=False):
-    if session:
-        try:
-            # Create a clean version for database storage
-            monthly_df = forecast_df[['Date', 'Oil_Blend', 'Gas_Blend', 'Gross Revenue', 'Net Cash Flow', 'Years']].copy()
-            monthly_df['API_UWI'] = selected_api
-            monthly_df['ECORUN_ID'] = ecorun_id
-            monthly_df['ECORUN_DATE'] = datetime.now()
-            
-            # Save to Snowflake
-            session.create_dataframe(monthly_df).write.mode("append").save_as_table("ECON_MONTHLY_FORECAST")
-            
-            st.success("Monthly forecast data saved to Snowflake")
-        except Exception as e:
-            st.error(f"Error saving monthly forecast: {str(e)}")
-    else:
-        st.warning("Not connected to Snowflake - monthly forecast not saved")
+    # Option to download cash flow data specifically
+    if 'Net Cash Flow' in forecast_df.columns:
+        cash_flow_df = forecast_df[['Date', 'Oil_Blend', 'Gas_Blend', 'Gross Revenue', 'Net Cash Flow', 'Cum_NCF']]
+        st.markdown(get_csv_download_link(cash_flow_df, f"{selected_api}_cash_flow.csv", "Download Cash Flow CSV"), unsafe_allow_html=True)
         
-# =============================================================================
-# SECTION 5D: SINGLE WELL FORECAST - DATA TABLES & EXPORT
-# =============================================================================
+        # Add option to download blended cash flow data if available
+        if use_blended_view and 'Data_Source' in blended_df.columns and any(blended_df['Data_Source'] == 'Historical'):
+            blended_cash_flow = blended_df[['Date', 'Data_Source', 'Oil_Blend', 'Gas_Blend', 'Gross Revenue', 'Net Cash Flow', 'Cum_NCF']]
+            st.markdown(get_csv_download_link(blended_cash_flow, f"{selected_api}_blended_cash_flow.csv", "Download Blended Cash Flow CSV"), unsafe_allow_html=True)
 
-    # Only run this section if a forecast exists
-    if st.session_state.forecast_df is not None:
-        forecast_df = st.session_state.forecast_df  # Get the stored forecast
-        selected_api = st.session_state.get('selected_api', 'MANUAL')  # Get selected_api from session state
-        
-        # Get historical cash flow data for comparison
-        hist_cashflow = None
-        if param_source == "Select Existing Well":
-            hist_cashflow = get_historical_cashflow(selected_api, price_deck, years=2)
-        
-        # Additional display options for the forecast
-        with st.expander("Additional Forecast Options", expanded=False):
-            st.markdown("### Additional Analysis")
+    # Option to save monthly forecast to Snowflake
+    if st.checkbox("Save Monthly Forecast to Snowflake", value=False):
+        if session:
+            try:
+                # Create a clean version for database storage
+                monthly_df = forecast_df[['Date', 'Oil_Blend', 'Gas_Blend', 'Gross Revenue', 'Net Cash Flow', 'Years']].copy()
+                monthly_df['API_UWI'] = selected_api
+                monthly_df['ECORUN_ID'] = ecorun_id
+                monthly_df['ECORUN_DATE'] = datetime.now()
+                
+                # Save to Snowflake
+                session.create_dataframe(monthly_df).write.mode("append").save_as_table("ECON_MONTHLY_FORECAST")
+                
+                st.success("Monthly forecast data saved to Snowflake")
+            except Exception as e:
+                st.error(f"Error saving monthly forecast: {str(e)}")
+        else:
+            st.warning("Not connected to Snowflake - monthly forecast not saved")
             
-            # Choose options for advanced analysis
-            analysis_type = st.selectbox(
-                "Analysis Type",
-                ["Production Summary", "Revenue Breakdown", "NPV Sensitivity"],
-                key="advanced_analysis"
-            )
+    # =============================================================================
+    # SECTION 5D: SINGLE WELL FORECAST - DATA TABLES & EXPORT
+    # =============================================================================
+
+        # Only run this section if a forecast exists
+        if st.session_state.forecast_df is not None:
+            forecast_df = st.session_state.forecast_df  # Get the stored forecast
+            selected_api = st.session_state.get('selected_api', 'MANUAL')  # Get selected_api from session state
             
-            if analysis_type == "Production Summary":
-                # Summary statistics for production
-                st.subheader("Production Summary Statistics")
+            # Get historical cash flow data for comparison
+            hist_cashflow = None
+            if param_source == "Select Existing Well":
+                hist_cashflow = get_historical_cashflow(selected_api, price_deck, years=2)
+            
+            # Additional display options for the forecast
+            with st.expander("Additional Forecast Options", expanded=False):
+                st.markdown("### Additional Analysis")
                 
-                # Calculate monthly averages and other statistics
-                stats_df = pd.DataFrame({
-                    'Metric': ['Average Monthly', 'Maximum Monthly', 'Minimum Monthly', '1st Year Total', '5-Year Total'],
-                    'Oil (BBL)': [
-                        round(forecast_df['Oil_Blend'].mean(), 0),
-                        round(forecast_df['Oil_Blend'].max(), 0),
-                        round(forecast_df['Oil_Blend'][forecast_df['Oil_Blend'] > 0].min(), 0),
-                        round(forecast_df['Oil_Blend'].head(12).sum(), 0),
-                        round(forecast_df['Oil_Blend'].head(min(60, len(forecast_df))).sum(), 0)
-                    ],
-                    'Gas (MCF)': [
-                        round(forecast_df['Gas_Blend'].mean(), 0),
-                        round(forecast_df['Gas_Blend'].max(), 0),
-                        round(forecast_df['Gas_Blend'][forecast_df['Gas_Blend'] > 0].min(), 0),
-                        round(forecast_df['Gas_Blend'].head(12).sum(), 0),
-                        round(forecast_df['Gas_Blend'].head(min(60, len(forecast_df))).sum(), 0)
-                    ]
-                })
-                
-                st.dataframe(stats_df.style.format({
-                    'Oil (BBL)': '{:,.0f}',
-                    'Gas (MCF)': '{:,.0f}'
-                }))
-                
-                # Decline curve parameters summary
-                st.subheader("Decline Curve Parameters")
-                
-                params_df = pd.DataFrame({
-                    'Parameter': ['Initial Rate', 'Decline Type', 'Initial Decline Rate', 'B-Factor', 'Terminal Decline'],
-                    'Oil': [
-                        f"{oil_qi:.0f} BBL/day",
-                        "Hyperbolic" if oil_decline_type == "H" else "Exponential",
-                        f"{oil_decline*100:.1f}%",
-                        f"{oil_b_factor:.2f}" if oil_decline_type == "H" else "N/A",
-                        f"{oil_terminal_decline*100:.1f}%" if oil_decline_type == "H" else "N/A"
-                    ],
-                    'Gas': [
-                        f"{gas_qi:.0f} MCF/day",
-                        "Hyperbolic" if gas_decline_type == "H" else "Exponential",
-                        f"{gas_decline*100:.1f}%",
-                        f"{gas_b_factor:.2f}" if gas_decline_type == "H" else "N/A",
-                        f"{gas_terminal_decline*100:.1f}%" if gas_decline_type == "H" else "N/A"
-                    ]
-                })
-                
-                st.dataframe(params_df)
-                
-            elif analysis_type == "Revenue Breakdown":
-                # Breakdown of revenue components
-                st.subheader("Revenue Components Breakdown")
-                
-                # Calculate totals for each component
-                total_oil_revenue = forecast_df['Oil_Revenue'].sum()
-                total_gas_revenue = forecast_df['Gas_Revenue'].sum()
-                total_expenses = forecast_df['GPT'].sum() + forecast_df['Sev Tax'].sum() + forecast_df['AdVal Tax'].sum()
-                total_net = forecast_df['Net Cash Flow'].sum()
-                
-                # Create a revenue breakdown chart
-                revenue_data = {
-                    'Category': ['Oil Revenue', 'Gas Revenue', 'Expenses', 'Net Cash Flow'],
-                    'Amount': [total_oil_revenue, total_gas_revenue, -total_expenses, total_net]
-                }
-                
-                revenue_df = pd.DataFrame(revenue_data)
-                
-                # Display breakdown stats
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Oil Revenue %", f"{total_oil_revenue/(total_oil_revenue+total_gas_revenue)*100:.1f}%")
-                    st.metric("Gas Revenue %", f"{total_gas_revenue/(total_oil_revenue+total_gas_revenue)*100:.1f}%")
-                
-                with col2:
-                    st.metric("Expense Ratio", f"{total_expenses/(total_oil_revenue+total_gas_revenue)*100:.1f}%")
-                    st.metric("Net Cash Flow Ratio", f"{total_net/(total_oil_revenue+total_gas_revenue)*100:.1f}%")
-                
-                # Create a waterfall chart
-                waterfall_fig = go.Figure(go.Waterfall(
-                    name="Revenue Breakdown",
-                    orientation="v",
-                    measure=["relative", "relative", "relative", "total"],
-                    x=revenue_df['Category'],
-                    textposition="outside",
-                    text=revenue_df['Amount'].apply(lambda x: f"${x:,.0f}"),
-                    y=revenue_df['Amount'],
-                    connector={"line": {"color": "rgb(63, 63, 63)"}},
-                ))
-                
-                waterfall_fig.update_layout(
-                    title="Revenue Breakdown Waterfall",
-                    showlegend=False
+                # Choose options for advanced analysis
+                analysis_type = st.selectbox(
+                    "Analysis Type",
+                    ["Production Summary", "Revenue Breakdown", "NPV Sensitivity"],
+                    key="advanced_analysis"
                 )
                 
-                st.plotly_chart(waterfall_fig, use_container_width=True)
-                
-            elif analysis_type == "NPV Sensitivity":
-                # NPV sensitivity analysis
-                st.subheader("NPV Sensitivity Analysis")
-                
-                # Create sensitivity sliders
-                col1, col2 = st.columns(2)
-                with col1:
-                    price_factor = st.slider("Price Factor", min_value=0.5, max_value=1.5, value=1.0, step=0.1)
-                    decline_factor = st.slider("Decline Rate Factor", min_value=0.8, max_value=1.2, value=1.0, step=0.05)
-                
-                with col2:
-                    expense_factor = st.slider("Expense Factor", min_value=0.7, max_value=1.3, value=1.0, step=0.1)
-                    discount_rate = st.slider("Discount Rate", min_value=8, max_value=24, value=10, step=2)
-                
-                # Calculate base case NPV
-                base_npv = pv_results[f'PV{discount_rate}']
-                
-                # Calculate simple sensitivities
-                high_price_npv = base_npv * price_factor
-                low_expense_npv = base_npv * (1 + (1-expense_factor)*0.3)  # Simplified sensitivity
-                high_decline_npv = base_npv * (1 - (decline_factor-1)*0.5)  # Simplified sensitivity
-                combined_npv = base_npv * price_factor * (1 + (1-expense_factor)*0.3) * (1 - (decline_factor-1)*0.5)
-                
-                # Create sensitivity results
-                sensitivity_data = {
-                    'Scenario': ['Base Case', 'Price Sensitivity', 'Expense Sensitivity', 'Decline Sensitivity', 'Combined Effect'],
-                    f'NPV{discount_rate}': [base_npv, high_price_npv, low_expense_npv, high_decline_npv, combined_npv],
-                    'Change': [0, high_price_npv - base_npv, low_expense_npv - base_npv, high_decline_npv - base_npv, combined_npv - base_npv],
-                    'Change %': [0, (high_price_npv / base_npv - 1) * 100, (low_expense_npv / base_npv - 1) * 100, 
-                               (high_decline_npv / base_npv - 1) * 100, (combined_npv / base_npv - 1) * 100]
-                }
+                if analysis_type == "Production Summary":
+                    # Summary statistics for production
+                    st.subheader("Production Summary Statistics")
+                    
+                    # Calculate monthly averages and other statistics
+                    stats_df = pd.DataFrame({
+                        'Metric': ['Average Monthly', 'Maximum Monthly', 'Minimum Monthly', '1st Year Total', '5-Year Total'],
+                        'Oil (BBL)': [
+                            round(forecast_df['Oil_Blend'].mean(), 0),
+                            round(forecast_df['Oil_Blend'].max(), 0),
+                            round(forecast_df['Oil_Blend'][forecast_df['Oil_Blend'] > 0].min(), 0),
+                            round(forecast_df['Oil_Blend'].head(12).sum(), 0),
+                            round(forecast_df['Oil_Blend'].head(min(60, len(forecast_df))).sum(), 0)
+                        ],
+                        'Gas (MCF)': [
+                            round(forecast_df['Gas_Blend'].mean(), 0),
+                            round(forecast_df['Gas_Blend'].max(), 0),
+                            round(forecast_df['Gas_Blend'][forecast_df['Gas_Blend'] > 0].min(), 0),
+                            round(forecast_df['Gas_Blend'].head(12).sum(), 0),
+                            round(forecast_df['Gas_Blend'].head(min(60, len(forecast_df))).sum(), 0)
+                        ]
+                    })
+                    
+                    st.dataframe(stats_df.style.format({
+                        'Oil (BBL)': '{:,.0f}',
+                        'Gas (MCF)': '{:,.0f}'
+                    }))
+                    
+                    # Decline curve parameters summary
+                    st.subheader("Decline Curve Parameters")
+                    
+                    params_df = pd.DataFrame({
+                        'Parameter': ['Initial Rate', 'Decline Type', 'Initial Decline Rate', 'B-Factor', 'Terminal Decline'],
+                        'Oil': [
+                            f"{oil_qi:.0f} BBL/day",
+                            "Hyperbolic" if oil_decline_type == "H" else "Exponential",
+                            f"{oil_decline*100:.1f}%",
+                            f"{oil_b_factor:.2f}" if oil_decline_type == "H" else "N/A",
+                            f"{oil_terminal_decline*100:.1f}%" if oil_decline_type == "H" else "N/A"
+                        ],
+                        'Gas': [
+                            f"{gas_qi:.0f} MCF/day",
+                            "Hyperbolic" if gas_decline_type == "H" else "Exponential",
+                            f"{gas_decline*100:.1f}%",
+                            f"{gas_b_factor:.2f}" if gas_decline_type == "H" else "N/A",
+                            f"{gas_terminal_decline*100:.1f}%" if gas_decline_type == "H" else "N/A"
+                        ]
+                    })
+                    
+                    st.dataframe(params_df)
+                    
+                elif analysis_type == "Revenue Breakdown":
+                    # Breakdown of revenue components
+                    st.subheader("Revenue Components Breakdown")
+                    
+                    # Calculate totals for each component
+                    total_oil_revenue = forecast_df['Oil_Revenue'].sum()
+                    total_gas_revenue = forecast_df['Gas_Revenue'].sum()
+                    total_expenses = forecast_df['GPT'].sum() + forecast_df['Sev Tax'].sum() + forecast_df['AdVal Tax'].sum()
+                    total_net = forecast_df['Net Cash Flow'].sum()
+                    
+                    # Create a revenue breakdown chart
+                    revenue_data = {
+                        'Category': ['Oil Revenue', 'Gas Revenue', 'Expenses', 'Net Cash Flow'],
+                        'Amount': [total_oil_revenue, total_gas_revenue, -total_expenses, total_net]
+                    }
+                    
+                    revenue_df = pd.DataFrame(revenue_data)
+                    
+                    # Display breakdown stats
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Oil Revenue %", f"{total_oil_revenue/(total_oil_revenue+total_gas_revenue)*100:.1f}%")
+                        st.metric("Gas Revenue %", f"{total_gas_revenue/(total_oil_revenue+total_gas_revenue)*100:.1f}%")
+                    
+                    with col2:
+                        st.metric("Expense Ratio", f"{total_expenses/(total_oil_revenue+total_gas_revenue)*100:.1f}%")
+                        st.metric("Net Cash Flow Ratio", f"{total_net/(total_oil_revenue+total_gas_revenue)*100:.1f}%")
+                    
+                    # Create a waterfall chart
+                    waterfall_fig = go.Figure(go.Waterfall(
+                        name="Revenue Breakdown",
+                        orientation="v",
+                        measure=["relative", "relative", "relative", "total"],
+                        x=revenue_df['Category'],
+                        textposition="outside",
+                        text=revenue_df['Amount'].apply(lambda x: f"${x:,.0f}"),
+                        y=revenue_df['Amount'],
+                        connector={"line": {"color": "rgb(63, 63, 63)"}},
+                    ))
+                    
+                    waterfall_fig.update_layout(
+                        title="Revenue Breakdown Waterfall",
+                        showlegend=False
+                    )
+                    
+                    st.plotly_chart(waterfall_fig, use_container_width=True)
+                    
+                elif analysis_type == "NPV Sensitivity":
+                    # NPV sensitivity analysis
+                    st.subheader("NPV Sensitivity Analysis")
+                    
+                    # Create sensitivity sliders
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        price_factor = st.slider("Price Factor", min_value=0.5, max_value=1.5, value=1.0, step=0.1)
+                        decline_factor = st.slider("Decline Rate Factor", min_value=0.8, max_value=1.2, value=1.0, step=0.05)
+                    
+                    with col2:
+                        expense_factor = st.slider("Expense Factor", min_value=0.7, max_value=1.3, value=1.0, step=0.1)
+                        discount_rate = st.slider("Discount Rate", min_value=8, max_value=24, value=10, step=2)
+                    
+                    # Calculate base case NPV
+                    base_npv = pv_results[f'PV{discount_rate}']
+                    
+                    # Calculate simple sensitivities
+                    high_price_npv = base_npv * price_factor
+                    low_expense_npv = base_npv * (1 + (1-expense_factor)*0.3)  # Simplified sensitivity
+                    high_decline_npv = base_npv * (1 - (decline_factor-1)*0.5)  # Simplified sensitivity
+                    combined_npv = base_npv * price_factor * (1 + (1-expense_factor)*0.3) * (1 - (decline_factor-1)*0.5)
+                    
+                    # Create sensitivity results
+                    sensitivity_data = {
+                        'Scenario': ['Base Case', 'Price Sensitivity', 'Expense Sensitivity', 'Decline Sensitivity', 'Combined Effect'],
+                        f'NPV{discount_rate}': [base_npv, high_price_npv, low_expense_npv, high_decline_npv, combined_npv],
+                        'Change': [0, high_price_npv - base_npv, low_expense_npv - base_npv, high_decline_npv - base_npv, combined_npv - base_npv],
+                        'Change %': [0, (high_price_npv / base_npv - 1) * 100, (low_expense_npv / base_npv - 1) * 100, 
+                                (high_decline_npv / base_npv - 1) * 100, (combined_npv / base_npv - 1) * 100]
+                    }
+except:
+    st.warning('Click Generate Forecast button to see results')
 
 # =============================================================================
 # SECTION 6: MULTI-WELL ANALYSIS
@@ -2153,7 +2176,9 @@ with tab2:
     with col_batch_date2:
         batch_months = st.slider("Forecast Months", min_value=12, max_value=600, value=360, step=12, key="batch_months")
     with col_batch_date3:
-        batch_price_deck = st.selectbox("Price Deck", price_deck_options, key="batch_price_deck")
+        st.write(price_deck_options)
+        price_deck_options.sort()
+        batch_price_deck = st.selectbox("Price Deck", price_deck_options, key="batch_price_deck", index = 3)
     
     # Well selection for batch processing
     st.subheader("Well Selection")
